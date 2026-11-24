@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Pencil, ShieldCheck, ShieldAlert } from "lucide-react";
 import {
-  Badge, PageHeader, PrimaryButton, SecondaryButton, Table, Td,
+  Badge, PageHeader, PrimaryButton, SecondaryButton, SearchInput, Select, Table, Td,
   Modal, FormField, TextInput, SelectInput, Toast,
 } from "../components/ui";
+import Pagination from "../components/Pagination";
+import PasswordChecklist, { isStrongPassword } from "../components/PasswordChecklist";
+import { useApi, useDebounced } from "../lib/useApi";
 import { useData } from "../context/DataContext"; // only for the shared toast message
 import type { Role } from "../data/mock";
 import { getSession, roleLabel } from "../components/RequireAuth";
 import { api, ApiUser, errorMessage } from "../lib/api";
+
+interface UsersPage { users: ApiUser[]; total: number; page: number; pageSize: number; activeCount: number; inactiveCount: number }
 
 const roleColors: Record<Role, string> = {
   SUPER_ADMIN: "bg-[#FDF2F4] text-[#7C2D3E] border border-[#F0D0D6]",
@@ -29,8 +35,6 @@ const ALL_ROLE_OPTS: { label: string; value: Role }[] = [
 
 type UserForm = { name: string; username: string; email: string; password: string; confirmPassword: string; role: Role | "" };
 
-const MIN_PASSWORD_LENGTH = 8;
-
 const formatLastLogin = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" }) : "Never";
 
@@ -45,56 +49,86 @@ export default function Users() {
   const roleOpts = ALL_ROLE_OPTS.filter((o) => manageableRoles.includes(o.value));
   const emptyForm: UserForm = { name: "", username: "", email: "", password: "", confirmPassword: "", role: manageableRoles.length === 1 ? manageableRoles[0] : "" };
 
-  const [users, setUsers] = useState<ApiUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
+  // Search, filters and pages are handled by the server, so only one page of accounts is loaded at a time.
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get("search") ?? ""); // quick search links arrive with ?search=
+  const [roleFilter, setRoleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const q = useDebounced(search.trim(), 300);
+  useEffect(() => { setPage(1); }, [q, roleFilter, statusFilter, pageSize]);
+
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (q) params.set("search", q);
+  if (roleFilter) params.set("role", roleFilter);
+  if (statusFilter) params.set("status", statusFilter);
+  const list = useApi<UsersPage>(`/users?${params.toString()}`);
+  const visibleUsers = list.data?.users ?? [];
+  const total = list.data?.total ?? 0;
+  const loading = list.loading && !list.data;
+  const loadError = list.error;
+  const loadUsers = list.reload;
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ApiUser | null>(null);
   const [form, setForm] = useState<UserForm>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  // Changes each time the form opens, so the inputs are brand new (nothing carried over, nothing autofilled).
+  const [formKey, setFormKey] = useState(0);
+  const [taken, setTaken] = useState({ username: false, email: false });
 
-  const loadUsers = useCallback(async () => {
-    setLoadError("");
-    try {
-      const data = await api<{ users: ApiUser[] }>("/users");
-      setUsers(data.users);
-    } catch (err) {
-      setLoadError(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Warns while typing when the username or email already belongs to another account.
+  const dUsername = useDebounced(form.username.trim(), 400);
+  const dEmail = useDebounced(form.email.trim(), 400);
+  const checkSeq = useRef(0);
   useEffect(() => {
-    loadUsers();
-  }, [loadUsers]);
-
-  const visibleUsers = users.filter((u) => manageableRoles.includes(u.role));
+    if (!modalOpen) return;
+    const seq = ++checkSeq.current;
+    if (dUsername.length < 3 && !dEmail.includes("@")) { setTaken({ username: false, email: false }); return; }
+    const qs = new URLSearchParams();
+    if (dUsername.length >= 3) qs.set("username", dUsername);
+    if (dEmail.includes("@")) qs.set("email", dEmail);
+    if (editTarget) qs.set("excludeId", editTarget.id);
+    api<{ usernameTaken: boolean; emailTaken: boolean }>(`/users/availability?${qs.toString()}`)
+      .then((r) => { if (seq === checkSeq.current) setTaken({ username: r.usernameTaken, email: r.emailTaken }); })
+      .catch(() => { /* the server still checks when saving */ });
+  }, [dUsername, dEmail, modalOpen, editTarget]);
 
   const set = (k: keyof UserForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
-  const openAdd = () => { setEditTarget(null); setForm(emptyForm); setModalOpen(true); };
+  const resetForm = (next: UserForm) => { setForm(next); setFormError(""); setTaken({ username: false, email: false }); setFormKey((k) => k + 1); };
+  const openAdd = () => { setEditTarget(null); resetForm(emptyForm); setModalOpen(true); };
   const openEdit = (u: ApiUser) => {
     setEditTarget(u);
-    setForm({ name: u.name, username: u.username, email: u.email, password: "", confirmPassword: "", role: u.role });
+    resetForm({ name: u.name, username: u.username, email: u.email, password: "", confirmPassword: "", role: u.role });
     setModalOpen(true);
   };
+  const closeModal = () => { setModalOpen(false); resetForm(emptyForm); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.role) return;
+    setFormError("");
 
     // New accounts need a password. When editing, leaving it blank keeps the
     // current one; typing a new one replaces it.
     const wantsPassword = !editTarget || form.password !== "" || form.confirmPassword !== "";
+    const clearPasswords = () => setForm((f) => ({ ...f, password: "", confirmPassword: "" }));
+    if (taken.username || taken.email) {
+      setFormError(taken.username ? "That username is already taken." : "That email is already used by another account.");
+      return;
+    }
     if (wantsPassword) {
-      if (form.password.length < MIN_PASSWORD_LENGTH) {
-        showToast(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`, "error");
+      if (!isStrongPassword(form.password)) {
+        setFormError("Password does not meet all the requirements listed below.");
+        clearPasswords();
         return;
       }
       if (form.password !== form.confirmPassword) {
-        showToast("Password and confirmation do not match.", "error");
+        setFormError("Password and confirmation do not match.");
+        clearPasswords();
         return;
       }
     }
@@ -119,12 +153,16 @@ export default function Users() {
           method: "POST",
           body: { name: form.name, username: form.username, email: form.email, password: form.password, role: form.role },
         });
+        setPage(1);
         await loadUsers();
         showToast(`Account created for "${form.name}". They can sign in with username "${form.username.trim().toLowerCase()}".`);
       }
-      setModalOpen(false);
+      // Success: close and wipe every field (including the password) so nothing is left for the next account.
+      closeModal();
     } catch (err) {
-      showToast(errorMessage(err), "error");
+      // Failure: keep what was typed so it can be corrected, but never keep the passwords.
+      setFormError(errorMessage(err));
+      clearPasswords();
     } finally {
       setSaving(false);
     }
@@ -188,7 +226,31 @@ export default function Users() {
           <h3 className="font-semibold text-[#1C1C2E]" style={{ fontFamily: "Outfit, sans-serif" }}>
             {myRole === "SUPER_ADMIN" ? "Admin & MedTech Accounts" : "MedTech Accounts"}
           </h3>
-          <span className="text-xs text-[#6B7280]">{visibleUsers.length} accounts</span>
+          <span className="text-xs text-[#6B7280]">{total} accounts</span>
+        </div>
+
+        <div className="p-4 border-b border-[#E8E5E2] flex flex-wrap items-center gap-3">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search name, username, email..." />
+          {manageableRoles.length > 1 && (
+            <Select
+              value={roleFilter}
+              onChange={setRoleFilter}
+              options={[{ label: "All Roles", value: "" }, ...roleOpts]}
+            />
+          )}
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[{ label: "All Status", value: "" }, { label: "Active", value: "ACTIVE" }, { label: "Inactive", value: "INACTIVE" }]}
+          />
+          {(search || roleFilter || statusFilter) && (
+            <button
+              onClick={() => { setSearch(""); setRoleFilter(""); setStatusFilter(""); }}
+              className="text-xs text-[#7C2D3E] underline cursor-pointer"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
 
         <Table headers={["User", "Email", "Role", "Status", "Last Login", "Actions"]}>
@@ -231,48 +293,82 @@ export default function Users() {
         {!loading && loadError && (
           <div className="py-12 text-center text-sm text-red-600">
             {loadError}{" "}
-            <button onClick={() => { setLoading(true); loadUsers(); }} className="underline cursor-pointer">Try again</button>
+            <button onClick={() => void loadUsers()} className="underline cursor-pointer">Try again</button>
           </div>
         )}
         {!loading && !loadError && visibleUsers.length === 0 && (
-          <div className="py-12 text-center text-sm text-[#6B7280]">No accounts in your management scope yet.</div>
+          <div className="py-12 text-center text-sm text-[#6B7280]">
+            {search || roleFilter || statusFilter ? "No accounts match your search or filters." : "No accounts in your management scope yet."}
+          </div>
         )}
+        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} />
       </div>
 
       {/* Add / Edit modal */}
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={closeModal}
         title={editTarget ? `Edit User — ${editTarget.name}` : "Add New User"}
         size="sm"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form key={formKey} onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+          {formError && <div role="alert" className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2.5">{formError}</div>}
           <FormField label="Full Name" required>
             <TextInput value={form.name} onChange={(v) => set("name", v)} placeholder="e.g. Dr. Jose Villanueva" required />
           </FormField>
           <FormField label="Username" required>
-            <TextInput value={form.username} onChange={(v) => set("username", v)} placeholder="e.g. jvillanueva" required />
+            <input
+              type="text"
+              name="new-account-username"
+              autoComplete="off"
+              value={form.username}
+              onChange={(e) => set("username", e.target.value)}
+              placeholder="e.g. jvillanueva"
+              required
+              className={`w-full border rounded-lg px-3 py-2.5 text-sm text-[#1C1C2E] focus:outline-none focus:ring-2 placeholder:text-gray-400 ${taken.username ? "border-red-300 focus:ring-red-100" : "border-[#E8E5E2] focus:ring-[#7C2D3E]/20 focus:border-[#7C2D3E]"}`}
+            />
+            {taken.username && <p className="text-xs text-red-600 mt-1" data-testid="username-taken">This username is already taken.</p>}
           </FormField>
           <FormField label="Email Address" required>
-            <TextInput type="email" value={form.email} onChange={(v) => set("email", v)} placeholder="name@cvrbc.doh.gov.ph" required />
+            <input
+              type="email"
+              name="new-account-email"
+              autoComplete="off"
+              value={form.email}
+              onChange={(e) => set("email", e.target.value)}
+              placeholder="name@cvrbc.doh.gov.ph"
+              required
+              className={`w-full border rounded-lg px-3 py-2.5 text-sm text-[#1C1C2E] focus:outline-none focus:ring-2 placeholder:text-gray-400 ${taken.email ? "border-red-300 focus:ring-red-100" : "border-[#E8E5E2] focus:ring-[#7C2D3E]/20 focus:border-[#7C2D3E]"}`}
+            />
+            {taken.email && <p className="text-xs text-red-600 mt-1" data-testid="email-taken">This email is already used by another account.</p>}
           </FormField>
           <FormField label={editTarget ? "New Password" : "Password"} required={!editTarget}>
-            <TextInput
+            <input
               type="password"
+              name="new-account-password"
+              autoComplete="new-password"
               value={form.password}
-              onChange={(v) => set("password", v)}
-              placeholder={editTarget ? "Leave blank to keep current password" : `At least ${MIN_PASSWORD_LENGTH} characters`}
+              onChange={(e) => set("password", e.target.value)}
+              placeholder={editTarget ? "Leave blank to keep current password" : "Create a strong password"}
               required={!editTarget}
+              className="w-full border border-[#E8E5E2] rounded-lg px-3 py-2.5 text-sm text-[#1C1C2E] focus:outline-none focus:ring-2 focus:ring-[#7C2D3E]/20 focus:border-[#7C2D3E] placeholder:text-gray-400"
             />
+            {(!editTarget || form.password) && <PasswordChecklist password={form.password} />}
           </FormField>
           <FormField label="Confirm Password" required={!editTarget}>
-            <TextInput
+            <input
               type="password"
+              name="new-account-confirm"
+              autoComplete="new-password"
               value={form.confirmPassword}
-              onChange={(v) => set("confirmPassword", v)}
+              onChange={(e) => set("confirmPassword", e.target.value)}
               placeholder="Re-enter the password"
               required={!editTarget}
+              className="w-full border border-[#E8E5E2] rounded-lg px-3 py-2.5 text-sm text-[#1C1C2E] focus:outline-none focus:ring-2 focus:ring-[#7C2D3E]/20 focus:border-[#7C2D3E] placeholder:text-gray-400"
             />
+            {form.confirmPassword && form.password !== form.confirmPassword && (
+              <p className="text-xs text-red-600 mt-1">Passwords do not match yet.</p>
+            )}
           </FormField>
           <FormField label="Role" required>
             {roleOpts.length > 1 ? (
@@ -288,7 +384,7 @@ export default function Users() {
             <PrimaryButton type="submit" disabled={saving}>
               {saving ? "Saving…" : editTarget ? "Save Changes" : "Add User"}
             </PrimaryButton>
-            <SecondaryButton onClick={() => setModalOpen(false)}>Cancel</SecondaryButton>
+            <SecondaryButton onClick={closeModal}>Cancel</SecondaryButton>
           </div>
         </form>
       </Modal>

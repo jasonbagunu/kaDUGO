@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate, requireRole } from "../middleware/auth";
-import { createUser, listUsers, setUserStatus, updateUser } from "../controllers/users.controller";
+import { checkAvailability, createUser, listUsers, setUserStatus, updateUser } from "../controllers/users.controller";
 
 const router = Router();
 
@@ -9,6 +9,7 @@ const router = Router();
 router.use(authenticate, requireRole("SUPER_ADMIN", "ADMIN"));
 
 router.get("/", listUsers);
+router.get("/availability", checkAvailability);
 router.post("/", createUser);
 router.patch("/:id", updateUser);
 router.patch("/:id/status", setUserStatus);

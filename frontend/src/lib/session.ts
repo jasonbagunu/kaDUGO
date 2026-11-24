@@ -1,4 +1,5 @@
 import type { Role } from "../data/mock";
+import { clearReveal } from "./reveal";
 
 // The signed-in user and their login token. Kept in sessionStorage, so it is
 // cleared when the browser tab is closed. The token is what the backend
@@ -37,6 +38,7 @@ export function setSession(session: Session) {
 // Signing out by hand also clears any leftover message. (The expired-session
 // path calls this first, then sets its message.)
 export function clearSession() {
+  clearReveal();
   sessionStorage.removeItem(SESSION_KEY);
   sessionStorage.removeItem(NOTICE_KEY);
   window.dispatchEvent(new Event(SESSION_EVENT));

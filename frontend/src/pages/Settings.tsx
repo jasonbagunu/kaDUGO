@@ -5,6 +5,7 @@ import { useData } from "../context/DataContext";
 import { getSession, roleLabel } from "../components/RequireAuth";
 import { setSession } from "../lib/session";
 import { api, errorMessage } from "../lib/api";
+import { isStrongPassword } from "../components/PasswordChecklist";
 
 const sections = [
   { key: "account", label: "Account Settings", icon: User },
@@ -119,8 +120,8 @@ export default function Settings() {
       showToast("New password and confirmation do not match.", "error");
       return;
     }
-    if (pwForm.next.length < 8) {
-      showToast("New password must be at least 8 characters.", "error");
+    if (!isStrongPassword(pwForm.next)) {
+      showToast("New password must have 8+ characters with uppercase, lowercase, a number and a special character.", "error");
       return;
     }
     setSavingPassword(true);

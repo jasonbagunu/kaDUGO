@@ -152,6 +152,11 @@ model DonationEvent {
   description      String      @default("")
   organizer        String      @default("")
   contact          String      @default("")
+  // Optional ways for registered donors to reach the organizers
+  facebookUrl    String @default("")
+  messengerUrl   String @default("")
+  contactEmail   String @default("")
+  otherPlatforms String @default("")
   status           EventStatus @default(UPCOMING)
   registrationOpen Boolean     @default(true)
 
@@ -185,6 +190,10 @@ model PreRegistration {
   contact      String
   email        String     @default("")
   address      String     @default("")
+  // Structured Region > Province > City > Barangay (PSGC codes + names); `address` holds the same as text
+  addressDetails Json?
+  // lower-case "name|date of birth": stops the same person being registered twice for one event
+  dedupeKey    String?
   bloodType    BloodType?
   registeredAt DateTime   @default(now())
 
@@ -200,6 +209,7 @@ model PreRegistration {
   donor    Donor?    @relation(fields: [donorId], references: [id], onDelete: SetNull)
   donation Donation?
 
+  @@unique([eventId, dedupeKey])
   @@index([eventId])
   @@index([attendance])
   @@map("pre_registrations")
@@ -216,6 +226,10 @@ model Donor {
   contact      String
   email        String      @default("")
   address      String      @default("")
+  // Structured Region > Province > City > Barangay (PSGC codes + names); `address` holds the same as text
+  addressDetails Json?
+  // lower-case "name|date of birth": a database-level stop for duplicate donors
+  dedupeKey    String?     @unique
   status       DonorStatus @default(ACTIVE)
   registeredAt DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -249,6 +263,7 @@ model Donation {
 
   bloodUnit BloodUnit?
 
+  @@unique([donorId, eventId])
   @@index([donorId])
   @@index([eventId])
   @@index([date])

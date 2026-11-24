@@ -1,7 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { authenticate } from "../middleware/auth";
-import { changePassword, login, me, updateMe } from "../controllers/auth.controller";
+import { changePassword, login, me, reauthenticate, updateMe } from "../controllers/auth.controller";
 
 const router = Router();
 
@@ -18,5 +18,7 @@ router.post("/login", loginLimiter, login);
 router.get("/me", authenticate, me);
 router.patch("/me", authenticate, updateMe);
 router.post("/change-password", authenticate, changePassword);
+// Password confirmation before viewing sensitive donor details (same attempt limit as login).
+router.post("/reauth", authenticate, loginLimiter, reauthenticate);
 
 export default router;

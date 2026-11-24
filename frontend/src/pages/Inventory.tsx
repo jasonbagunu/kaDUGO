@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { AlertTriangle, Clock, Package } from "lucide-react";
 import { PageHeader, SearchInput, Select, Table, Td, Badge } from "../components/ui";
 import type { ApiInventorySummary, ApiUnit, Paged } from "../lib/api";
 import { useApi, useDebounced } from "../lib/useApi";
+import Pagination from "../components/Pagination";
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] as const;
 type BT = typeof BLOOD_TYPES[number];
@@ -26,8 +27,11 @@ export default function Inventory() {
   const [status, setStatus] = useState("");
   const [bt, setBt] = useState("");
   const q = useDebounced(search.trim(), 300);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  useEffect(() => { setPage(1); }, [q, bt, status, pageSize]);
 
-  const params = new URLSearchParams({ pageSize: "500" });
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (q) params.set("search", q);
   if (bt) params.set("bloodType", bt);
   if (status) params.set("status", status);
@@ -150,6 +154,9 @@ export default function Inventory() {
         </Table>
         {unitsQ.loading && !unitsQ.data && <div className="py-10 text-center text-sm text-[#6B7280]">Loading inventory...</div>}
         {unitsQ.data && filtered.length === 0 && <div className="py-10 text-center text-sm text-[#6B7280]">No units match your filters.</div>}
+        {unitsQ.data && unitsQ.data.total > 0 && (
+          <Pagination page={page} pageSize={pageSize} total={unitsQ.data.total} onPage={setPage} onPageSize={setPageSize} pageSizes={[10, 25, 50]} />
+        )}
       </div>
     </div>
   );

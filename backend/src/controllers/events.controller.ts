@@ -7,6 +7,7 @@ import { nextId } from "../lib/ids";
 import { logAudit } from "../lib/audit";
 import { dateString, fromDbDate, timeString, toDbDate } from "../lib/dates";
 import { EVENT_STATUS_LABEL, eventStatusInput } from "../lib/labels";
+import { eventContactNumber, optionalEmail, optionalUrl } from "../lib/validators";
 
 // ───────────── validation ─────────────
 
@@ -15,13 +16,22 @@ import { EVENT_STATUS_LABEL, eventStatusInput } from "../lib/labels";
 // again inside .partial()). Defaults are applied explicitly in the handlers.
 const eventFields = {
   name: z.string().trim().min(1, "Event name is required.").max(200, "Event name is too long."),
-  date: dateString,
+  date: dateString.refine((v) => {
+    const year = Number(v.slice(0, 4));
+    return year >= 2020 && year <= 2100;
+  }, "Enter a realistic event date (between 2020 and 2100)."),
   startTime: timeString,
   endTime: timeString,
   location: z.string().trim().min(1, "Location is required.").max(200, "Location is too long."),
   description: z.string().trim().max(2000, "Description is too long."),
   organizer: z.string().trim().min(1, "Organizer is required.").max(200, "Organizer is too long."),
-  contact: z.string().trim().min(1, "Contact information is required.").max(100, "Contact information is too long."),
+  // Digits only: an 11-digit mobile number starting with 09, or a landline with area code.
+  contact: eventContactNumber,
+  // Optional ways for donors to reach the organizers
+  facebookUrl: optionalUrl,
+  messengerUrl: optionalUrl,
+  contactEmail: optionalEmail,
+  otherPlatforms: z.string().trim().max(300, "Other contact details are too long (300 characters at most)."),
   status: eventStatusInput,
   registrationOpen: z.boolean(),
 };
@@ -31,6 +41,10 @@ const createSchema = z
   .object({
     ...eventFields,
     description: eventFields.description.optional(),
+    facebookUrl: eventFields.facebookUrl.optional(),
+    messengerUrl: eventFields.messengerUrl.optional(),
+    contactEmail: eventFields.contactEmail.optional(),
+    otherPlatforms: eventFields.otherPlatforms.optional(),
     status: eventFields.status.optional(),
     registrationOpen: eventFields.registrationOpen.optional(),
   })
@@ -45,6 +59,9 @@ const updateSchema = z.object(eventFields).partial();
 const listQuerySchema = z.object({
   status: eventStatusInput.optional(),
   search: z.string().trim().optional(),
+  // Pages are optional: dropdowns elsewhere ask for the whole list.
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(500).default(500),
 });
 
 // ───────────── calculated numbers ─────────────
@@ -119,6 +136,10 @@ function serializeEvent(e: DonationEvent, counts: EventCounts) {
     description: e.description,
     organizer: e.organizer,
     contact: e.contact,
+    facebookUrl: e.facebookUrl,
+    messengerUrl: e.messengerUrl,
+    contactEmail: e.contactEmail,
+    otherPlatforms: e.otherPlatforms,
     status: EVENT_STATUS_LABEL[e.status],
     registrationOpen: e.registrationOpen,
     // Used to build the public registration link: /register/<publicToken>
@@ -131,7 +152,7 @@ function serializeEvent(e: DonationEvent, counts: EventCounts) {
 // ───────────── handlers (all three roles) ─────────────
 
 export const listEvents = asyncHandler(async (req, res) => {
-  const { status, search } = listQuerySchema.parse(req.query);
+  const { status, search, page, pageSize } = listQuerySchema.parse(req.query);
 
   const where: Prisma.DonationEventWhereInput = {
     ...(status ? { status } : {}),
@@ -146,9 +167,15 @@ export const listEvents = asyncHandler(async (req, res) => {
       : {}),
   };
 
-  const events = await prisma.donationEvent.findMany({ where, orderBy: { date: "desc" } });
+  const [events, total, byStatus] = await Promise.all([
+    prisma.donationEvent.findMany({ where, orderBy: { date: "desc" }, skip: (page - 1) * pageSize, take: pageSize }),
+    prisma.donationEvent.count({ where }),
+    prisma.donationEvent.groupBy({ by: ["status"], _count: { _all: true } }), // whole list, for the summary tiles
+  ]);
   const counts = await countsFor(events.map((e) => e.id));
-  res.json({ events: events.map((e) => serializeEvent(e, counts.get(e.id)!)) });
+  const statusCounts: Record<string, number> = { Upcoming: 0, Ongoing: 0, Completed: 0, Cancelled: 0 };
+  for (const row of byStatus) statusCounts[EVENT_STATUS_LABEL[row.status]] = row._count._all;
+  res.json({ events: events.map((e) => serializeEvent(e, counts.get(e.id)!)), total, page, pageSize, statusCounts });
 });
 
 export const getEvent = asyncHandler(async (req, res) => {
@@ -177,6 +204,10 @@ export const createEvent = asyncHandler(async (req, res) => {
         description: data.description ?? "",
         organizer: data.organizer,
         contact: data.contact,
+        facebookUrl: data.facebookUrl ?? "",
+        messengerUrl: data.messengerUrl ?? "",
+        contactEmail: data.contactEmail ?? "",
+        otherPlatforms: data.otherPlatforms ?? "",
         status: data.status ?? "UPCOMING",
         registrationOpen: data.registrationOpen ?? true,
         createdById: actor.id,
@@ -219,6 +250,10 @@ export const updateEvent = asyncHandler(async (req, res) => {
         description: data.description,
         organizer: data.organizer,
         contact: data.contact,
+        facebookUrl: data.facebookUrl,
+        messengerUrl: data.messengerUrl,
+        contactEmail: data.contactEmail,
+        otherPlatforms: data.otherPlatforms,
         status: data.status,
         registrationOpen: data.registrationOpen,
       },

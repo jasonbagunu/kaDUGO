@@ -4,12 +4,29 @@ import { dateString, toDbDate } from "./dates";
 // Treat "" and null as "not provided" (empty form fields arrive as "").
 export const emptyToUndefined = (v: unknown) => (v === "" || v === null ? undefined : v);
 
-export const contactNumber = z
+// Philippine mobile number: exactly 11 digits starting with 09 (e.g. 09171234567).
+// Spaces and dashes typed by the user are removed before checking.
+export const phMobile = z
   .string()
   .trim()
-  .min(7, "Enter a valid contact number.")
-  .max(20, "Enter a valid contact number.")
-  .regex(/^[0-9+()\-\s]+$/, "Enter a valid contact number.");
+  .transform((v) => v.replace(/[\s-]/g, ""))
+  .refine((v) => /^09\d{9}$/.test(v), "Enter an 11-digit mobile number that starts with 09 (e.g. 09171234567).");
+
+// Contact number for an event: digits only. A mobile number must be the usual 11
+// digits starting with 09; anything else is treated as a landline with area code (7-11 digits).
+export const eventContactNumber = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/[\s-]/g, ""))
+  .refine((v) => /^\d{7,11}$/.test(v), "Contact number must contain digits only (7 to 11 digits).")
+  .refine((v) => !v.startsWith("09") || v.length === 11, "A mobile number must be 11 digits and start with 09.");
+
+// Only http(s) links are accepted for social media / announcement links.
+export const optionalUrl = z
+  .string()
+  .trim()
+  .max(300, "Link is too long.")
+  .refine((v) => v === "" || /^https?:\/\/[^\s]+\.[^\s]+$/i.test(v), "Enter a full link that starts with http:// or https://.");
 
 // Email is optional: an empty string is fine, anything else must look like an email.
 export const optionalEmail = z

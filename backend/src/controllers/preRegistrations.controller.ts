@@ -8,6 +8,7 @@ import { fromDbDate } from "../lib/dates";
 import { nextId } from "../lib/ids";
 import { emptyToUndefined } from "../lib/validators";
 import { findMatchingDonor, serializeDonor, statsForDonors } from "./donors.controller";
+import { dedupeKey } from "../lib/donorMatch";
 import {
   ATTENDANCE_LABEL, BLOOD_TYPE_LABEL, OUTCOME_LABEL, SEX_LABEL,
   attendanceInput, bloodTypeInput, outcomeInput,
@@ -210,6 +211,8 @@ export const registerDonorFromPreReg = asyncHandler(async (req, res) => {
           contact: preReg.contact,
           email: preReg.email,
           address: preReg.address,
+          ...(preReg.addressDetails ? { addressDetails: preReg.addressDetails as Prisma.InputJsonValue } : {}),
+          dedupeKey: dedupeKey(preReg.name, dobText),
         },
       });
       created = true;

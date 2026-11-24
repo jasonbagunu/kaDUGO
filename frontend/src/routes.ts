@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, redirect } from "react-router";
 import RequireAuth, { RequireAnyRole, RequireAdminOrAbove, RequireOperationalStaff, RequireSuperAdmin } from "./components/RequireAuth";
 import Layout from "./components/Layout";
 import Login from "./pages/Login";
@@ -13,12 +13,12 @@ import Testing from "./pages/Testing";
 import Inventory from "./pages/Inventory";
 import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
-import CreateEvent from "./pages/CreateEvent";
 import PreRegistrations from "./pages/PreRegistrations";
 import PublicRegistration from "./pages/PublicRegistration";
 import Analytics from "./pages/Analytics";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
+import Profile from "./pages/Profile";
 import AuditLogs from "./pages/AuditLogs";
 import AccessDenied from "./pages/AccessDenied";
 
@@ -55,9 +55,10 @@ export const router = createBrowserRouter([
             children: [
               { index: true, Component: Dashboard },
               { path: "events", Component: Events },
-              { path: "events/create", Component: CreateEvent },
+              { path: "events/create", loader: () => redirect("/events?create=1") },
               { path: "events/:id", Component: EventDetail },
               { path: "pre-registrations", Component: PreRegistrations },
+              { path: "profile", Component: Profile },
             ],
           },
 

@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { useParams } from "react-router";
-import { Activity, Calendar, MapPin, CheckCircle, Heart } from "lucide-react";
+import { Activity, Calendar, MapPin, CheckCircle, Heart, ArrowLeft, ArrowRight, AlertTriangle, Info } from "lucide-react";
 import { useEffect } from "react";
+import AddressSelect from "../components/AddressSelect";
+import EventContactInfo from "../components/EventContactInfo";
+import { PhoneInput, phMobileError } from "../components/inputs";
 import { ApiError, errorMessage, type ApiPublicEvent } from "../lib/api";
+import { DONOR_AGE, ageFromDob, ageNotice, todayLocal } from "../lib/age";
+import { EMPTY_ADDRESS, isAddressComplete, type AddressValue } from "../lib/phAddress";
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:4000/api";
 
@@ -19,16 +24,16 @@ async function publicCall<T>(path: string, body?: unknown): Promise<T> {
     throw new ApiError(0, "Cannot reach the server. Please try again in a moment.");
   }
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, data && typeof data.error === "string" ? data.error : `Request failed (${res.status}).`);
+  if (!res.ok) throw new ApiError(res.status, data && typeof data.error === "string" ? data.error : `Request failed (${res.status}).`, data ?? {});
   return data as T;
 }
 
 const reminders = [
-  "Must be 18-65 years old and in good health",
+  "Must be 16-65 years old and in good health (donors under 18 need written parental or guardian consent)",
   "Weigh at least 50 kg (110 lbs)",
   "No fever, cough, or cold symptoms",
   "No recent tattoos or piercings (within 12 months)",
-  "Must not have donated blood within the last 3 months",
+  "Must not have donated blood within the last 3 months (12 weeks)",
   "Bring a valid government-issued ID on the day of donation",
 ];
 
@@ -41,6 +46,9 @@ export default function PublicRegistration() {
   const [refNum, setRefNum] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
+  // The page has two steps: read about the event, then fill in the form. Going back keeps what was typed.
+  const [step, setStep] = useState<"info" | "form">("info");
+  const [needsConsent, setNeedsConsent] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,9 +62,19 @@ export default function PublicRegistration() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
+    const age = ageFromDob(form.dob);
+    if (age === null) return setFormError("Enter a valid date of birth.");
+    if (age < DONOR_AGE.min || age > DONOR_AGE.max) {
+      return setFormError(`Online registration is for donors aged ${DONOR_AGE.min} to ${DONOR_AGE.max}. Please contact the blood center so a physician can assess you.`);
+    }
+    if (phMobileError(form.contact) || form.contact.length !== 11) return setFormError("Enter an 11-digit mobile number that starts with 09.");
+    if (!isAddressComplete(form.address)) return setFormError("Complete your address: region, province, city/municipality and barangay.");
     setSubmitting(true);
     try {
-      const r = await publicCall<{ reference: string }>(`/public/events/${encodeURIComponent(token ?? "")}/pre-register`, form);
+      const r = await publicCall<{ reference: string; needsParentalConsent?: boolean }>(
+        `/public/events/${encodeURIComponent(token ?? "")}/pre-register`, form,
+      );
+      setNeedsConsent(!!r.needsParentalConsent);
       setRefNum(r.reference);
       setSubmitted(true);
     } catch (err) {
@@ -66,10 +84,12 @@ export default function PublicRegistration() {
     }
   };
 
-  const [form, setForm] = useState({
-    name: "", dob: "", sex: "", contact: "", email: "", address: "", bloodType: "",
-  });
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const [form, setForm] = useState<{
+    name: string; dob: string; sex: string; contact: string; email: string; address: AddressValue; bloodType: string;
+  }>({ name: "", dob: "", sex: "", contact: "", email: "", address: EMPTY_ADDRESS, bloodType: "" });
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
+  const age = ageFromDob(form.dob);
+  const notice = ageNotice(age);
 
   const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-[#F5F4F2] flex items-center justify-center p-6" style={{ fontFamily: "Inter, sans-serif" }}>
@@ -120,6 +140,11 @@ export default function PublicRegistration() {
             </div>
           </div>
 
+          {needsConsent && (
+            <p className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3">
+              Because you are under 18, please bring written consent from a parent or guardian.
+            </p>
+          )}
           <p className="text-xs text-[#9CA3AF]">Please bring this reference number and a valid ID on the day of the donation event.</p>
         </div>
       </div>
@@ -154,9 +179,12 @@ export default function PublicRegistration() {
             <div className="flex items-center gap-1.5 text-xs text-[#6B7280]"><MapPin className="w-3.5 h-3.5" />{event.location}</div>
           </div>
           {event.description && <p className="text-sm text-[#6B7280] mt-3">{event.description}</p>}
+          {step === "info" && <EventContactInfo event={event} className="mt-4 pt-4 border-t border-[#E8E5E2]" />}
         </div>
 
         {/* Reminders */}
+        {step === "info" && (
+        <>
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
           <div className="font-semibold text-amber-800 text-sm mb-2">Important Reminders Before Donating</div>
           <ul className="space-y-1.5">
@@ -169,7 +197,26 @@ export default function PublicRegistration() {
           </ul>
         </div>
 
+        <button
+          type="button"
+          onClick={() => setStep("form")}
+          className="w-full inline-flex items-center justify-center gap-2 bg-[#7C2D3E] hover:bg-[#6B2535] text-white py-3 rounded-lg font-semibold text-sm transition-colors cursor-pointer"
+        >
+          Continue to Registration <ArrowRight className="w-4 h-4" />
+        </button>
+        </>
+        )}
+
         {/* Form */}
+        {step === "form" && (
+        <>
+        <button
+          type="button"
+          onClick={() => setStep("info")}
+          className="inline-flex items-center gap-2 text-sm text-[#6B7280] hover:text-[#1C1C2E] transition-colors cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to event information
+        </button>
         <div className="bg-white rounded-xl border border-[#E8E5E2] shadow-sm p-5">
           <h2 className="font-bold text-[#1C1C2E] mb-4" style={{ fontFamily: "Outfit, sans-serif" }}>Pre-Registration Form</h2>
           <form
@@ -178,8 +225,25 @@ export default function PublicRegistration() {
           >
             {formError && <div role="alert" className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2.5">{formError}</div>}
             <F label="Full Name" required><input required value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Enter your full name" className="pub-input" /></F>
-            <div className="grid grid-cols-2 gap-4">
-              <F label="Date of Birth" required><input type="date" required max={new Date().toISOString().slice(0, 10)} value={form.dob} onChange={(e) => set("dob", e.target.value)} className="pub-input" /></F>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <F label="Date of Birth" required><input type="date" required min="1900-01-01" max={todayLocal()} value={form.dob} onChange={(e) => set("dob", e.target.value)} className="pub-input" /></F>
+              <F label="Age"><div data-testid="age-display" className="pub-input !bg-gray-50">{age === null ? <span className="text-[#9CA3AF]">Calculated from date of birth</span> : `${age} years old`}</div></F>
+            </div>
+            {notice && (
+              <div
+                role="status"
+                data-testid="age-notice"
+                className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs ${notice.level === "info" ? "bg-blue-50 border-blue-200 text-blue-800" : "bg-amber-50 border-amber-200 text-amber-900"}`}
+              >
+                {notice.level === "info" ? <Info className="w-4 h-4 flex-shrink-0 mt-0.5" /> : <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />}
+                <p>
+                  {notice.level === "info"
+                    ? notice.message
+                    : `${notice.message.split(".")[0]}. Online registration is only for donors aged ${DONOR_AGE.min} to ${DONOR_AGE.max}; please contact the blood center${event.contact ? ` (${event.contact})` : ""}.`}
+                </p>
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <F label="Sex" required>
                 <select required value={form.sex} onChange={(e) => set("sex", e.target.value)} className="pub-input cursor-pointer">
                   <option value="">Select sex</option>
@@ -187,24 +251,28 @@ export default function PublicRegistration() {
                   <option>Female</option>
                 </select>
               </F>
+              <F label="Blood Type (if known)">
+                <select value={form.bloodType} onChange={(e) => set("bloodType", e.target.value)} className="pub-input cursor-pointer">
+                  <option value="">I don't know my blood type</option>
+                  {["A+","A-","B+","B-","AB+","AB-","O+","O-"].map((b) => <option key={b}>{b}</option>)}
+                </select>
+              </F>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <F label="Contact Number" required><input type="tel" required value={form.contact} onChange={(e) => set("contact", e.target.value)} placeholder="09xxxxxxxxx" className="pub-input" /></F>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <F label="Contact Number" required><PhoneInput required value={form.contact} onChange={(v) => set("contact", v)} /></F>
               <F label="Email Address"><input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="your@email.com" className="pub-input" /></F>
             </div>
-            <F label="Home Address" required><input required value={form.address} onChange={(e) => set("address", e.target.value)} placeholder="City, Province" className="pub-input" /></F>
-            <F label="Blood Type (if known)">
-              <select value={form.bloodType} onChange={(e) => set("bloodType", e.target.value)} className="pub-input cursor-pointer">
-                <option value="">I don't know my blood type</option>
-                {["A+","A-","B+","B-","AB+","AB-","O+","O-"].map((b) => <option key={b}>{b}</option>)}
-              </select>
-            </F>
-
+            <div>
+              <p className="text-sm font-medium text-[#1C1C2E] mb-2">Home Address <span className="text-[#7C2D3E]">*</span></p>
+              <AddressSelect value={form.address} onChange={(a) => set("address", a)} idPrefix="public" />
+            </div>
             <button type="submit" disabled={submitting} className="w-full bg-[#7C2D3E] hover:bg-[#6B2535] disabled:opacity-60 text-white py-3 rounded-lg font-semibold text-sm transition-colors mt-2 cursor-pointer">
               {submitting ? "Submitting..." : "Pre-Register for Blood Donation"}
             </button>
           </form>
         </div>
+        </>
+        )}
 
         <p className="text-center text-xs text-[#9CA3AF]">
           kaDUGO — Cagayan Valley Regional Blood Center · Department of Health

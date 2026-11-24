@@ -17,11 +17,24 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   }
 
   if (err instanceof AppError) {
-    return res.status(err.status).json({ error: err.message });
+    return res.status(err.status).json({ error: err.message, ...(err.extra ?? {}) });
   }
 
-  // Two requests created the same username/email at the same moment.
+  // The database refused a duplicate (two identical requests arriving together, for example).
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+    const target = String((err.meta as { target?: unknown } | undefined)?.target ?? "");
+    if (target.includes("dedupeKey") && target.includes("eventId")) {
+      return res.status(409).json({ error: "This person is already pre-registered for this event." });
+    }
+    if (target.includes("dedupeKey")) {
+      return res.status(409).json({ error: "A donor with the same name and birth date already exists." });
+    }
+    if (target.includes("donorId") && target.includes("eventId")) {
+      return res.status(409).json({ error: "This donor already has a donation record for this event." });
+    }
+    if (target.includes("preRegId")) {
+      return res.status(409).json({ error: "This pre-registration already has a donation record." });
+    }
     return res.status(409).json({ error: "That username or email is already in use." });
   }
 

@@ -1,12 +1,18 @@
 import type { Role } from "../data/mock";
 import { clearSession, getSession, setNotice } from "./session";
+import { getRevealToken } from "./reveal";
 
 // Where the backend lives. Override with VITE_API_URL in frontend/.env
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:4000/api";
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  // `data` holds anything extra the server sent with the error (for example a
+  // `code` such as "POSSIBLE_DUPLICATE" and the list of matching donors).
+  constructor(public status: number, message: string, public data: Record<string, unknown> = {}) {
     super(message);
+  }
+  get code(): string | undefined {
+    return typeof this.data.code === "string" ? this.data.code : undefined;
   }
 }
 
@@ -28,6 +34,8 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
       headers: {
         "Content-Type": "application/json",
         ...(session ? { Authorization: `Bearer ${session.token}` } : {}),
+        // Proof that the password was re-entered recently (only used for protected donor details).
+        ...(getRevealToken() && path.startsWith("/donors") ? { "X-Reveal-Token": getRevealToken()! } : {}),
       },
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
@@ -52,7 +60,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
       setNotice(message);
       window.location.assign("/login");
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, data && typeof data === "object" ? data : {});
   }
   return data as T;
 }
@@ -112,6 +120,10 @@ export interface ApiEvent {
   description: string;
   organizer: string;
   contact: string;
+  facebookUrl: string;
+  messengerUrl: string;
+  contactEmail: string;
+  otherPlatforms: string;
   status: ApiEventStatus;
   registrationOpen: boolean;
   publicToken: string;
@@ -146,19 +158,60 @@ export interface ApiPreReg {
   verifiedAt: string | null;
 }
 
+export interface ApiEligibility {
+  eligible: boolean;
+  lastDonationDate: string | null;
+  nextEligibleDate: string | null;
+  daysRemaining: number;
+  intervalDays: number | null;
+  reason: string | null;
+}
+
+// What the server sends by default: the birth date, full contact number, email and street
+// address are hidden (masked) until the signed-in person confirms their password.
 export interface ApiDonor {
   id: string;
   name: string;
-  dob: string;
+  age: number;
   sex: "Male" | "Female";
   bloodType: string;
-  contact: string;
-  email: string;
-  address: string;
+  contact: string; // masked, e.g. 09•••••4567
+  email: string; // masked
+  address: string; // barangay and city only
   status: "Active" | "Deferred" | "Inactive";
   registrationDate: string;
   totalDonations: number;
   lastDonation: string | null;
+  eligibility: ApiEligibility;
+}
+
+export interface ApiAddressDetails {
+  street: string;
+  region: { code: string; name: string };
+  province: { code: string; name: string };
+  city: { code: string; name: string };
+  barangay: { code: string; name: string };
+}
+
+export interface ApiDonorSensitive {
+  id: string;
+  dob: string;
+  age: number;
+  contact: string;
+  email: string;
+  address: string;
+  addressDetails: ApiAddressDetails | null;
+}
+
+export interface ApiDuplicateDonor {
+  id: string;
+  name: string;
+  age: number;
+  bloodType: string;
+  contact: string;
+  registrationDate: string;
+  level: "exact" | "possible";
+  reason: string;
 }
 
 export interface ApiDonorDonation {
@@ -209,6 +262,10 @@ export interface ApiPublicEvent {
   description: string;
   organizer: string;
   contact: string;
+  facebookUrl: string;
+  messengerUrl: string;
+  contactEmail: string;
+  otherPlatforms: string;
   status: ApiEventStatus;
   acceptingRegistrations: boolean;
 }

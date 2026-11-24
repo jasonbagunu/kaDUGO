@@ -1,7 +1,10 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { Plus, Calendar, MapPin, Users, Droplets, ChevronRight } from "lucide-react";
-import { Badge, PageHeader, PrimaryButton, SearchInput, Select } from "../components/ui";
+import { Badge, PageHeader, PrimaryButton, SearchInput, Select, Toast } from "../components/ui";
+import EventFormModal from "../components/EventFormModal";
+import Pagination from "../components/Pagination";
+import { useData } from "../context/DataContext";
 import { useApi, useDebounced } from "../lib/useApi";
 import type { ApiEvent } from "../lib/api";
 
@@ -13,37 +16,64 @@ const statusOpts = [
   { label: "Cancelled", value: "Cancelled" },
 ];
 
+interface EventsPage {
+  events: ApiEvent[]; total: number; page: number; pageSize: number;
+  statusCounts: Record<string, number>;
+}
+
 export default function Events() {
-  const { data, loading, error, reload } = useApi<{ events: ApiEvent[] }>("/events");
-  const events = data?.events ?? [];
+    const [searchParams, setSearchParams] = useSearchParams();
+  const { toast, showToast } = useData();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const q = useDebounced(search, 150).toLowerCase();
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
+  const q = useDebounced(search.trim(), 300);
+  useEffect(() => { setPage(1); }, [q, status, pageSize]);
 
-  const filtered = events.filter((e) => {
-    const matchSearch = e.name.toLowerCase().includes(q) || e.location.toLowerCase().includes(q);
-    const matchStatus = !status || e.status === status;
-    return matchSearch && matchStatus;
-  });
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (q) params.set("search", q);
+  if (status) params.set("status", status);
+  const { data, loading, error, reload } = useApi<EventsPage>(`/events?${params.toString()}`);
+  const filtered = data?.events ?? [];
+  const total = data?.total ?? 0;
+  const counts = data?.statusCounts ?? {};
+  const allEvents = Object.values(counts).reduce((a, b) => a + b, 0);
+
+  // The old /events/create address opens the pop-up (?create=1) so existing links still work.
+  const [createOpen, setCreateOpen] = useState(searchParams.get("create") === "1");
+  const closeCreate = () => {
+    setCreateOpen(false);
+    if (searchParams.has("create")) setSearchParams({}, { replace: true });
+  };
 
   return (
     <div>
       <PageHeader
         title="Donation Events"
-        subtitle={`${events.length} blood donation events`}
+        subtitle={`${allEvents} blood donation events`}
         actions={
-          <Link to="/events/create">
-            <PrimaryButton>
-              <Plus className="w-4 h-4" /> Create Event
-            </PrimaryButton>
-          </Link>
+          <PrimaryButton onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4" /> Create Event
+          </PrimaryButton>
         }
       />
 
-      {/* Summary */}
-      <div className="grid grid-cols-4 gap-3 mb-5">
+      <EventFormModal
+        open={createOpen}
+        onClose={closeCreate}
+        onCreated={(event) => {
+          closeCreate();
+          setPage(1);
+          void reload();
+          showToast(`Event "${event.name}" created as ${event.id}.`);
+        }}
+      />
+
+      {/* Summary (counted over every event, not just this page) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         {(["Upcoming", "Ongoing", "Completed", "Cancelled"] as const).map((s) => {
-          const count = events.filter((e) => e.status === s).length;
+          const count = counts[s] ?? 0;
           const colors: Record<string, string> = {
             Upcoming: "bg-blue-50 border-blue-200 text-blue-700",
             Ongoing: "bg-green-50 border-green-200 text-green-700",
@@ -63,7 +93,7 @@ export default function Events() {
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <SearchInput value={search} onChange={setSearch} placeholder="Search event name, location..." />
         <Select value={status} onChange={setStatus} options={statusOpts} />
-        <span className="text-xs text-[#6B7280] ml-auto">{filtered.length} events</span>
+        <span className="text-xs text-[#6B7280] ml-auto">{total} events</span>
       </div>
 
       {loading && !data && <div className="py-16 text-center text-sm text-[#6B7280]">Loading events...</div>}
@@ -75,8 +105,8 @@ export default function Events() {
       )}
       {data && filtered.length === 0 && (
         <div className="py-16 text-center text-[#6B7280]">
-          <p className="font-medium">{events.length === 0 ? "No events yet" : "No events match your filters"}</p>
-          {events.length === 0 && <p className="text-xs mt-1">Click Create Event to schedule your first donation drive.</p>}
+          <p className="font-medium">{allEvents === 0 ? "No events yet" : "No events match your filters"}</p>
+          {allEvents === 0 && <p className="text-xs mt-1">Click Create Event to schedule your first donation drive.</p>}
         </div>
       )}
 
@@ -148,6 +178,14 @@ export default function Events() {
           );
         })}
       </div>
+
+      {data && total > 0 && (
+        <div className="mt-4 bg-white rounded-xl border border-[#E8E5E2] shadow-sm">
+          <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} pageSizes={[5, 10, 25]} />
+        </div>
+      )}
+
+      {toast && <Toast message={toast.message} type={toast.type} />}
     </div>
   );
 }

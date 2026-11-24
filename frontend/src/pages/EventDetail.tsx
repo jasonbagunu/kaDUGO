@@ -1,3 +1,4 @@
+import EventContactInfo from "../components/EventContactInfo";
 import { useState } from "react";
 import { useParams, Link } from "react-router";
 import { ArrowLeft, Calendar, MapPin, Users, Droplets, Clock, Share2, Copy, QrCode, ExternalLink, Settings2 } from "lucide-react";
@@ -201,6 +202,7 @@ export default function EventDetail() {
                   <div className="text-sm text-[#1C1C2E] font-medium">{event.contact}</div>
                 </div>
               </div>
+              <EventContactInfo event={event} className="bg-[#F9F8F7] border border-[#E8E5E2] rounded-xl p-4" />
               {event.arrived > 0 && (
                 <div>
                   <div className="text-xs text-[#6B7280] mb-1">Conversion Rate (donations / arrived)</div>

@@ -1,14 +1,39 @@
+import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router";
-import { ArrowLeft, Droplet, Phone, Mail, MapPin, Calendar, User } from "lucide-react";
+import { ArrowLeft, Droplet, Phone, Mail, MapPin, Calendar, User, Lock, Eye, EyeOff, CheckCircle2, Clock } from "lucide-react";
 import { Badge } from "../components/ui";
+import PasswordConfirmModal from "../components/PasswordConfirmModal";
 import { useApi } from "../lib/useApi";
-import type { ApiDonor, ApiDonorDonation } from "../lib/api";
+import { ApiError, api, errorMessage, type ApiDonor, type ApiDonorDonation, type ApiDonorSensitive } from "../lib/api";
+import { getRevealToken } from "../lib/reveal";
+
+const fmtDate = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
 
 export default function DonorProfile() {
   const { id } = useParams();
   const { data, loading, error } = useApi<{ donor: ApiDonor; donations: ApiDonorDonation[] }>(id ? `/donors/${encodeURIComponent(id)}` : null);
   const donor = data?.donor;
   const donorDonations = data?.donations ?? [];
+
+  // Protected details (birth date, full contact number, email, street address) stay hidden
+  // until the person confirms their password; viewing them is written to the audit log.
+  const [sensitive, setSensitive] = useState<ApiDonorSensitive | null>(null);
+  const [askPassword, setAskPassword] = useState(false);
+  const [revealError, setRevealError] = useState("");
+  useEffect(() => { setSensitive(null); setRevealError(""); }, [id]);
+
+  const reveal = async () => {
+    if (!id) return;
+    setRevealError("");
+    try {
+      const res = await api<{ sensitive: ApiDonorSensitive }>(`/donors/${encodeURIComponent(id)}/sensitive`);
+      setSensitive(res.sensitive);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "REAUTH_REQUIRED") setAskPassword(true);
+      else setRevealError(errorMessage(err));
+    }
+  };
+  const startReveal = () => (getRevealToken() ? void reveal() : setAskPassword(true));
 
   if (!donor) {
     return (
@@ -49,24 +74,91 @@ export default function DonorProfile() {
             {/* Info rows */}
             <div className="pt-4 space-y-3">
               {[
-                { icon: User, label: "Date of Birth", value: donor.dob },
+                { icon: User, label: "Age", value: `${donor.age} years old` },
+                { icon: User, label: "Date of Birth", value: sensitive ? fmtDate(sensitive.dob) : "Hidden", locked: !sensitive },
                 { icon: User, label: "Sex", value: donor.sex },
-                { icon: Phone, label: "Contact", value: donor.contact },
-                { icon: Mail, label: "Email", value: donor.email || "—" },
-                { icon: MapPin, label: "Address", value: donor.address },
+                { icon: Phone, label: "Contact", value: sensitive ? sensitive.contact : donor.contact, locked: !sensitive },
+                { icon: Mail, label: "Email", value: (sensitive ? sensitive.email : donor.email) || "—", locked: !sensitive && !!donor.email },
+                { icon: MapPin, label: "Address", value: (sensitive ? sensitive.address : donor.address) || "—", locked: !sensitive },
                 { icon: Calendar, label: "Registered", value: donor.registrationDate },
-              ].map(({ icon: Icon, label, value }) => (
+              ].map(({ icon: Icon, label, value, locked }) => (
                 <div key={label} className="flex items-start gap-3">
                   <div className="w-7 h-7 bg-gray-50 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
                     <Icon className="w-3.5 h-3.5 text-[#6B7280]" />
                   </div>
                   <div>
                     <div className="text-[10px] text-[#9CA3AF] uppercase font-semibold tracking-wide">{label}</div>
-                    <div className="text-sm text-[#1C1C2E] font-medium">{value}</div>
+                    <div className={`text-sm font-medium ${locked ? "text-[#6B7280]" : "text-[#1C1C2E]"}`}>{value}</div>
                   </div>
                 </div>
               ))}
             </div>
+
+            <div className="mt-4 pt-4 border-t border-[#E8E5E2]">
+              {sensitive ? (
+                <button
+                  type="button"
+                  onClick={() => setSensitive(null)}
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#E8E5E2] text-sm text-[#1C1C2E] hover:bg-gray-50 cursor-pointer"
+                >
+                  <EyeOff className="w-4 h-4" /> Hide protected details
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startReveal}
+                  data-testid="reveal-details"
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#FDF2F4] border border-[#F0D0D6] text-sm font-medium text-[#7C2D3E] hover:bg-[#fbe6ea] cursor-pointer"
+                >
+                  <Eye className="w-4 h-4" /> View protected details
+                </button>
+              )}
+              <p className="flex items-center gap-1.5 text-[11px] text-[#9CA3AF] mt-2">
+                <Lock className="w-3 h-3" /> Needs your password. Each view is recorded in the audit log.
+              </p>
+              {revealError && <p className="text-xs text-red-600 mt-1">{revealError}</p>}
+            </div>
+          </div>
+
+          {/* Next eligible donation date */}
+          <div className="bg-white rounded-xl border border-[#E8E5E2] shadow-sm p-5" data-testid="eligibility-card">
+            <h3 className="font-semibold text-[#1C1C2E] mb-3" style={{ fontFamily: "Outfit, sans-serif" }}>Donation Eligibility</h3>
+            {donor.eligibility.eligible ? (
+              <div className="flex items-start gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2.5 text-sm text-green-800">
+                <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div>
+                  <div className="font-semibold">Eligible to donate now</div>
+                  <div className="text-xs mt-0.5">
+                    {donor.eligibility.lastDonationDate
+                      ? `Last donation was on ${fmtDate(donor.eligibility.lastDonationDate)}; the waiting time has passed.`
+                      : "No previous donation on record."}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-sm text-amber-900">
+                <Clock className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div>
+                  <div className="font-semibold">Not yet eligible</div>
+                  <div className="text-xs mt-0.5">{donor.eligibility.reason}</div>
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <div className="text-[10px] text-[#9CA3AF] uppercase font-semibold">Last Donation</div>
+                <div className="text-sm text-[#1C1C2E] font-medium mt-0.5">{donor.eligibility.lastDonationDate ? fmtDate(donor.eligibility.lastDonationDate) : "—"}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-[#9CA3AF] uppercase font-semibold">Next Eligible Date</div>
+                <div className="text-sm text-[#1C1C2E] font-medium mt-0.5" data-testid="next-eligible">
+                  {donor.eligibility.nextEligibleDate ? fmtDate(donor.eligibility.nextEligibleDate) : "Any time"}
+                </div>
+              </div>
+            </div>
+            {donor.eligibility.intervalDays && (
+              <p className="text-[11px] text-[#9CA3AF] mt-3">Waiting time after a donation: {donor.eligibility.intervalDays / 7} weeks (3 months).</p>
+            )}
           </div>
 
           {/* Stats */}
@@ -153,6 +245,12 @@ export default function DonorProfile() {
           </div>
         </div>
       </div>
+
+      <PasswordConfirmModal
+        open={askPassword}
+        onClose={() => setAskPassword(false)}
+        onConfirmed={() => { setAskPassword(false); void reveal(); }}
+      />
     </div>
   );
 }

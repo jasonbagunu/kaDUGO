@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { Eye, Pencil, Activity } from "lucide-react";
 import {
@@ -8,6 +8,7 @@ import {
 import { useData } from "../context/DataContext";
 import { api, errorMessage, type ApiUnit, type Paged } from "../lib/api";
 import { useApi, useDebounced } from "../lib/useApi";
+import Pagination from "../components/Pagination";
 
 const BT_OPTS = [
   { label: "Select blood type", value: "" },
@@ -44,8 +45,11 @@ export default function BloodUnits() {
   const [component, setComponent] = useState("");
   const [status, setStatus] = useState("");
   const q = useDebounced(search.trim(), 300);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  useEffect(() => { setPage(1); }, [q, bt, component, status, pageSize]);
 
-  const params = new URLSearchParams({ pageSize: "500", sort: "recent" });
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sort: "recent" });
   if (q) params.set("search", q);
   if (bt) params.set("bloodType", bt);
   if (component) params.set("component", component);
@@ -196,9 +200,9 @@ export default function BloodUnits() {
           </div>
         )}
 
-        <div className="px-4 py-3 border-t border-[#E8E5E2] flex items-center justify-between text-xs text-[#6B7280]">
-          <span>Showing {filtered.length} of {list.data?.total ?? 0} units</span>
-        </div>
+        {list.data && list.data.total > 0 && (
+          <Pagination page={page} pageSize={pageSize} total={list.data.total} onPage={setPage} onPageSize={setPageSize} pageSizes={[10, 25, 50]} />
+        )}
       </div>
 
       {/* Edit Blood Unit modal */}

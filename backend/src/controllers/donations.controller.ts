@@ -7,6 +7,7 @@ import { nextId } from "../lib/ids";
 import { logAudit } from "../lib/audit";
 import { fromDbDate, toDbDate } from "../lib/dates";
 import { addDays, SHELF_LIFE_DAYS } from "../lib/shelfLife";
+import { computeEligibility, lastDonations } from "../lib/eligibility";
 import { emptyToUndefined, pastDate } from "../lib/validators";
 import {
   BLOOD_TYPE_LABEL, COMPONENT_LABEL, DONATION_STATUS_LABEL, TESTING_STATUS_LABEL, UNIT_STATUS_LABEL,
@@ -143,6 +144,16 @@ export const createDonation = asyncHandler(async (req, res) => {
     throw new AppError(409, "This donor is inactive. Change their status to Active before recording a donation.");
   }
 
+  // Waiting time between donations: a completed donation starts a 12-week wait (3 months),
+  // so a new completed donation before that date is refused.
+  if ((data.status ?? "COMPLETED") === "COMPLETED") {
+    const last = (await lastDonations([donor.id])).get(donor.id) ?? null;
+    const eligibility = computeEligibility(last, "ACTIVE", toDbDate(data.date));
+    if (!eligibility.eligible) {
+      throw new AppError(409, eligibility.reason!, { code: "NOT_ELIGIBLE", nextEligibleDate: eligibility.nextEligibleDate });
+    }
+  }
+
   const bloodType = data.bloodType ?? donor.bloodType;
   if (bloodType !== donor.bloodType) {
     throw new AppError(
@@ -177,6 +188,12 @@ export const createDonation = asyncHandler(async (req, res) => {
     const event = await prisma.donationEvent.findUnique({ where: { id: eventId } });
     if (!event) throw new AppError(404, "Event not found.");
     if (event.status === "CANCELLED") throw new AppError(409, "This event was cancelled.");
+
+    // One donation record per donor per event (also enforced by the database).
+    const existing = await prisma.donation.findFirst({ where: { donorId: donor.id, eventId }, select: { id: true } });
+    if (existing) {
+      throw new AppError(409, `This donor already has a donation record for this event (${existing.id}).`, { code: "DUPLICATE_DONATION", donationId: existing.id });
+    }
   }
 
   const status = data.status ?? "COMPLETED";

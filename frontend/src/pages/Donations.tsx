@@ -8,6 +8,7 @@ import {
 import { useData } from "../context/DataContext";
 import { api, errorMessage, type ApiDonation, type ApiDonor, type ApiEvent, type Paged } from "../lib/api";
 import { useApi, useDebounced } from "../lib/useApi";
+import Pagination from "../components/Pagination";
 
 const STATUS_OPTS = [
   { label: "All Status", value: "" },
@@ -53,8 +54,11 @@ export default function Donations() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const q = useDebounced(search.trim(), 300);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  useEffect(() => { setPage(1); }, [q, statusFilter, testingFilter, pageSize]);
 
-  const params = new URLSearchParams({ pageSize: "500" });
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (q) params.set("search", q);
   if (statusFilter) params.set("status", statusFilter);
   if (testingFilter) params.set("testingStatus", testingFilter);
@@ -256,6 +260,9 @@ export default function Donations() {
             <div className="text-4xl mb-2">🔍</div>
             <p className="font-medium">No donations found</p>
           </div>
+        )}
+        {list.data && list.data.total > 0 && (
+          <Pagination page={page} pageSize={pageSize} total={list.data.total} onPage={setPage} onPageSize={setPageSize} pageSizes={[10, 25, 50]} />
         )}
       </div>
 

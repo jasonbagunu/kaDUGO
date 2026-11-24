@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import { z } from "zod";
-import type { Role } from "@prisma/client";
+import type { Prisma, Role } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { asyncHandler } from "../lib/asyncHandler";
@@ -86,13 +86,61 @@ async function loadManageableUser(id: string, actorRole: Role) {
   return target;
 }
 
+const listQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  role: z.enum(["ADMIN", "MEDTECH"]).optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(10),
+});
+
+// Searchable, filterable and paged. The role filter can only narrow the accounts the
+// signed-in person may manage; it can never widen it (an Admin still sees MedTechs only).
 export const listUsers = asyncHandler(async (req, res) => {
-  const users = await prisma.user.findMany({
-    where: { role: { in: manageableBy(req.user!.role) } },
-    orderBy: { createdAt: "desc" },
-    select: userSelect,
-  });
-  res.json({ users });
+  const { search, role, status, page, pageSize } = listQuerySchema.parse(req.query);
+  const allowed = manageableBy(req.user!.role);
+
+  const where: Prisma.UserWhereInput = {
+    role: { in: role ? allowed.filter((r) => r === role) : allowed },
+    ...(status ? { status } : {}),
+    ...(search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { username: { contains: search, mode: "insensitive" } },
+            { email: { contains: search, mode: "insensitive" } },
+            { id: { contains: search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
+
+  const [users, total, activeCount, inactiveCount] = await Promise.all([
+    prisma.user.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize, select: userSelect }),
+    prisma.user.count({ where }),
+    prisma.user.count({ where: { role: { in: allowed }, status: "ACTIVE" } }),
+    prisma.user.count({ where: { role: { in: allowed }, status: "INACTIVE" } }),
+  ]);
+  res.json({ users, items: users, total, page, pageSize, activeCount, inactiveCount });
+});
+
+// Lets the Add/Edit form warn while typing: is this username or email already used by any account?
+// Only "taken or not" is returned, never whose account it is.
+export const checkAvailability = asyncHandler(async (req, res) => {
+  const q = z
+    .object({
+      username: z.string().trim().max(60).optional(),
+      email: z.string().trim().max(150).optional(),
+      excludeId: z.string().trim().max(30).optional(),
+    })
+    .parse(req.query);
+
+  const notSelf = q.excludeId ? { id: { not: q.excludeId } } : {};
+  const [usernameHit, emailHit] = await Promise.all([
+    q.username ? prisma.user.findFirst({ where: { username: q.username.toLowerCase(), ...notSelf }, select: { id: true } }) : null,
+    q.email ? prisma.user.findFirst({ where: { email: q.email.toLowerCase(), ...notSelf }, select: { id: true } }) : null,
+  ]);
+  res.json({ usernameTaken: !!usernameHit, emailTaken: !!emailHit });
 });
 
 export const createUser = asyncHandler(async (req, res) => {

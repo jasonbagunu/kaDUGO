@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { ClipboardList } from "lucide-react";
 import { Badge, PageHeader, SearchInput, Select, Table, Td, Toast } from "../components/ui";
 import PreRegActions from "../components/PreRegActions";
 import { useData } from "../context/DataContext";
 import { useApi, useDebounced } from "../lib/useApi";
+import Pagination from "../components/Pagination";
 import type { ApiEvent, ApiPreReg, Paged } from "../lib/api";
 
 const attendanceOpts = [
@@ -16,12 +17,16 @@ const attendanceOpts = [
 
 export default function PreRegistrations() {
   const { toast } = useData();
-  const [search, setSearch] = useState("");
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get("search") ?? ""); // quick search links arrive with ?search=
   const [eventFilter, setEventFilter] = useState("");
   const [attendanceFilter, setAttendanceFilter] = useState("");
   const q = useDebounced(search.trim(), 300);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  useEffect(() => { setPage(1); }, [q, eventFilter, attendanceFilter, pageSize]);
 
-  const params = new URLSearchParams({ pageSize: "500" });
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (q) params.set("search", q);
   if (eventFilter) params.set("eventId", eventFilter);
   if (attendanceFilter) params.set("attendance", attendanceFilter);
@@ -84,6 +89,9 @@ export default function PreRegistrations() {
         {list.loading && !list.data && <div className="py-12 text-center text-sm text-[#6B7280]">Loading pre-registrations...</div>}
         {list.data && rows.length === 0 && (
           <div className="py-12 text-center text-sm text-[#6B7280]">No pre-registrations match your filters.</div>
+        )}
+        {list.data && list.data.total > 0 && (
+          <Pagination page={page} pageSize={pageSize} total={list.data.total} onPage={setPage} onPageSize={setPageSize} pageSizes={[10, 25, 50]} />
         )}
       </div>
 

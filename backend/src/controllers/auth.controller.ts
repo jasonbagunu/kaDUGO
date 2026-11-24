@@ -6,7 +6,8 @@ import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { asyncHandler } from "../lib/asyncHandler";
 import { logAudit } from "../lib/audit";
-import { emailSchema, nameSchema } from "../lib/userSchemas";
+import { emailSchema, nameSchema, passwordSchema } from "../lib/userSchemas";
+import { REVEAL_SECONDS, signRevealToken } from "../lib/reveal";
 
 const loginSchema = z.object({
   username: z.string().trim().min(1, "Enter your username."),
@@ -15,10 +16,7 @@ const loginSchema = z.object({
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Enter your current password."),
-  newPassword: z
-    .string()
-    .min(8, "New password must be at least 8 characters.")
-    .max(72, "New password must be 72 characters or fewer."),
+  newPassword: passwordSchema,
 });
 
 const publicUserSelect = {
@@ -156,4 +154,29 @@ export const updateMe = asyncHandler(async (req, res) => {
   });
 
   res.json({ user });
+});
+
+const reauthSchema = z.object({ password: z.string().min(1, "Enter your password.") });
+
+// Asks the signed-in person for their password again before they may see
+// sensitive donor information. A correct password returns a token that is
+// valid for a few minutes; a wrong one is recorded in the audit log.
+export const reauthenticate = asyncHandler(async (req, res) => {
+  const { password } = reauthSchema.parse(req.body);
+  const actor = req.user!;
+
+  const user = await prisma.user.findUnique({ where: { id: actor.id } });
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    await logAudit(prisma, {
+      userId: actor.id,
+      userName: actor.name,
+      userRole: actor.role,
+      action: "Failed Password Confirmation",
+      details: "Incorrect password when asking to view sensitive information",
+      ipAddress: req.ip,
+    });
+    throw new AppError(401, "Incorrect password.");
+  }
+
+  res.json({ revealToken: signRevealToken(actor.id), expiresInSeconds: REVEAL_SECONDS });
 });

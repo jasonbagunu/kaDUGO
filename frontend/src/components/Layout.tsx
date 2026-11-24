@@ -4,9 +4,10 @@ import {
   LayoutDashboard, Users, Droplets, FlaskConical, Package,
   Calendar, BarChart3, Settings, ShieldCheck, LogOut,
   Bell, Search, ChevronRight, Droplet, Activity, PanelLeftClose, PanelLeftOpen, Menu,
-  AlertTriangle, Clock, CalendarClock, User as UserIcon, X, ClipboardList, History,
+  AlertTriangle, Clock, CalendarClock, User as UserIcon, X, ClipboardList, History, Siren, ServerCog, Info, TestTube2,
 } from "lucide-react";
-import { api, type ApiDonation, type ApiDonor, type ApiEvent, type ApiUnit, type Paged } from "../lib/api";
+import { ConfirmDialog } from "./ui";
+import { api, type ApiDonation, type ApiDonor, type ApiEvent, type ApiInventorySummary, type ApiAuditLog, type ApiUnit, type ApiUser, type ApiPreReg, type Paged } from "../lib/api";
 import { useDebounced } from "../lib/useApi";
 import { clearSession, getSession, roleLabel } from "./RequireAuth";
 import { SESSION_EVENT } from "../lib/session";
@@ -42,6 +43,7 @@ const pageTitles: Record<string, { title: string; breadcrumbs: string[] }> = {
   "/users": { title: "Users & Access", breadcrumbs: ["Users & Access"] },
   "/audit-logs": { title: "Audit Logs", breadcrumbs: ["Audit Logs"] },
   "/settings": { title: "Settings", breadcrumbs: ["Settings"] },
+  "/profile": { title: "My Profile", breadcrumbs: ["My Profile"] },
   "/access-denied": { title: "Access Denied", breadcrumbs: ["Access Denied"] },
 };
 
@@ -73,9 +75,20 @@ export default function Layout() {
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
 
-  type Notification = { id: string; icon: typeof AlertTriangle; iconClass: string; text: string; to: string };
+  type NotifCategory = "emergency" | "events" | "system" | "other";
+  type Notification = { id: string; category: NotifCategory; icon: typeof AlertTriangle; iconClass: string; text: string; to: string };
+
+  const CATEGORY_META: Record<NotifCategory, { label: string; chip: string }> = {
+    emergency: { label: "Emergency", chip: "bg-red-50 text-red-700 border-red-200" },
+    events: { label: "Donation Events", chip: "bg-blue-50 text-blue-700 border-blue-200" },
+    system: { label: "System", chip: "bg-slate-100 text-slate-700 border-slate-200" },
+    other: { label: "Other", chip: "bg-purple-50 text-purple-700 border-purple-200" },
+  };
+  // Super Admin has no blood-bank records, so only the categories that apply to them are listed.
+  const CATEGORIES: NotifCategory[] = currentUser.role === "SUPER_ADMIN" ? ["events", "system"] : ["emergency", "events", "other"];
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifTab, setNotifTab] = useState<"all" | NotifCategory>("all");
 
   // Alerts come from the live records. They are re-read whenever you move to
   // another page, so a unit quarantined a minute ago shows up without a reload.
@@ -86,43 +99,83 @@ export default function Layout() {
     (async () => {
       const list: Notification[] = [];
       try {
-        const [quarantined, expiring, events] = await Promise.all([
+        const [quarantined, expiring, inventory, pendingTesting, events, inactiveUsers, failedLogins] = await Promise.all([
           operational ? api<Paged<ApiUnit>>("/blood-units?status=Quarantined&pageSize=5") : Promise.resolve(null),
           operational ? api<Paged<ApiUnit>>("/blood-units?status=Usable&expiringWithinDays=7&pageSize=5") : Promise.resolve(null),
-          api<{ events: ApiEvent[] }>("/events?status=Upcoming"),
+          operational ? api<ApiInventorySummary>("/inventory/summary").catch(() => null) : Promise.resolve(null),
+          operational ? api<Paged<ApiUnit>>("/blood-units?status=Pending Testing&pageSize=1").catch(() => null) : Promise.resolve(null),
+          api<{ events: ApiEvent[] }>("/events?status=Upcoming&pageSize=50"),
+          !operational ? api<{ total: number }>("/users?status=INACTIVE&pageSize=1").catch(() => null) : Promise.resolve(null),
+          !operational ? api<Paged<ApiAuditLog>>("/audit-logs?action=Failed Login&pageSize=50").catch(() => null) : Promise.resolve(null),
         ]);
+
+        // Emergency: things that need action now
         for (const u of quarantined?.items ?? []) {
           list.push({
-            id: `quarantine-${u.id}`, icon: AlertTriangle, iconClass: "text-amber-600 bg-amber-50",
+            id: `quarantine-${u.id}`, category: "emergency", icon: AlertTriangle, iconClass: "text-amber-600 bg-amber-50",
             text: `Unit ${u.id} (${u.bloodType}) is quarantined${u.testingStatus === "For Confirmation" ? " pending confirmatory testing" : ""}.`,
             to: `/blood-units/${u.id}`,
           });
         }
         for (const u of expiring?.items ?? []) {
           list.push({
-            id: `expiring-${u.id}`, icon: Clock, iconClass: "text-red-600 bg-red-50",
+            id: `expiring-${u.id}`, category: "emergency", icon: Clock, iconClass: "text-red-600 bg-red-50",
             text: `Unit ${u.id} (${u.bloodType}) expires ${u.daysToExpiry === 0 ? "today" : `in ${u.daysToExpiry}d`}.`,
             to: `/blood-units/${u.id}`,
           });
         }
+        for (const t of inventory?.byBloodType.filter((b) => b.isLowStock) ?? []) {
+          list.push({
+            id: `lowstock-${t.bloodType}`, category: "emergency", icon: Siren, iconClass: "text-red-600 bg-red-50",
+            text: `Low stock: only ${t.usable} usable ${t.bloodType} unit${t.usable === 1 ? "" : "s"} (minimum ${t.lowStockThreshold}).`,
+            to: "/inventory",
+          });
+        }
+
+        // Donation events starting soon
         for (const e of events.events) {
           const daysUntil = Math.ceil((new Date(e.date).getTime() - Date.now()) / 86400000);
           if (daysUntil >= 0 && daysUntil <= 3) {
             list.push({
-              id: `event-${e.id}`, icon: CalendarClock, iconClass: "text-blue-600 bg-blue-50",
-              text: `"${e.name}" starts ${daysUntil === 0 ? "today" : `in ${daysUntil}d`}.`,
+              id: `event-${e.id}`, category: "events", icon: CalendarClock, iconClass: "text-blue-600 bg-blue-50",
+              text: `"${e.name}" starts ${daysUntil === 0 ? "today" : `in ${daysUntil}d`}. ${e.preRegistered} pre-registered.`,
               to: `/events/${e.id}`,
             });
           }
         }
+
+        // System (Super Admin)
+        if (inactiveUsers && inactiveUsers.total > 0) {
+          list.push({
+            id: "inactive-users", category: "system", icon: ServerCog, iconClass: "text-slate-600 bg-slate-100",
+            text: `${inactiveUsers.total} account${inactiveUsers.total === 1 ? " is" : "s are"} deactivated.`, to: "/users",
+          });
+        }
+        const recentFails = (failedLogins?.items ?? []).filter((l) => Date.now() - new Date(l.timestamp).getTime() < 86400000).length;
+        if (recentFails > 0) {
+          list.push({
+            id: "failed-logins", category: "system", icon: AlertTriangle, iconClass: "text-amber-600 bg-amber-50",
+            text: `${recentFails} failed sign-in attempt${recentFails === 1 ? "" : "s"} in the last 24 hours.`, to: "/audit-logs",
+          });
+        }
+
+        // Other announcements
+        if (pendingTesting && pendingTesting.total > 0) {
+          list.push({
+            id: "pending-testing", category: "other", icon: TestTube2, iconClass: "text-purple-600 bg-purple-50",
+            text: `${pendingTesting.total} blood unit${pendingTesting.total === 1 ? " is" : "s are"} waiting for screening.`, to: "/testing",
+          });
+        }
       } catch {
         // Alerts are a convenience: if they cannot load, show none.
       }
-      if (!cancelled) setNotifications(list.slice(0, 8));
+      if (!cancelled) setNotifications(list);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, session?.userId]);
+
+  const visibleNotifs = notifTab === "all" ? notifications : notifications.filter((n) => n.category === notifTab);
 
   useEffect(() => {
     if (!notifOpen) return;
@@ -154,11 +207,14 @@ export default function Layout() {
     const enc = encodeURIComponent(q);
     const operational = currentUser.role !== "SUPER_ADMIN";
     (async () => {
-      const [donors, units, donations, events] = await Promise.all([
+      const manages = currentUser.role !== "MEDTECH";
+      const [donors, units, donations, events, users, preRegs] = await Promise.all([
         operational ? api<Paged<ApiDonor>>(`/donors?search=${enc}&pageSize=4`).catch(() => null) : Promise.resolve(null),
         operational ? api<Paged<ApiUnit>>(`/blood-units?search=${enc}&pageSize=4`).catch(() => null) : Promise.resolve(null),
         operational ? api<Paged<ApiDonation>>(`/donations?search=${enc}&pageSize=4`).catch(() => null) : Promise.resolve(null),
-        api<{ events: ApiEvent[] }>(`/events?search=${enc}`).catch(() => null),
+        api<{ events: ApiEvent[] }>(`/events?search=${enc}&pageSize=4`).catch(() => null),
+        manages ? api<{ users: ApiUser[] }>(`/users?search=${enc}&pageSize=4`).catch(() => null) : Promise.resolve(null),
+        api<Paged<ApiPreReg>>(`/pre-registrations?search=${enc}&pageSize=4`).catch(() => null),
       ]);
       if (seq !== searchSeq.current) return; // a newer search has started
       const groups: SearchGroup[] = [
@@ -166,6 +222,8 @@ export default function Layout() {
         { label: "Blood Units", results: (units?.items ?? []).map((u) => ({ id: u.id, icon: Droplets, label: `Unit ${u.id}`, sublabel: `${u.bloodType} • ${u.status}`, to: `/blood-units/${u.id}` })) },
         { label: "Donations", results: (donations?.items ?? []).map((d) => ({ id: d.id, icon: Activity, label: `Donation ${d.id}`, sublabel: `${d.donorName} • ${d.date}`, to: `/donations/${d.id}` })) },
         { label: "Events", results: (events?.events ?? []).slice(0, 4).map((e) => ({ id: e.id, icon: Calendar, label: e.name, sublabel: `${e.date} • ${e.status}`, to: `/events/${e.id}` })) },
+        { label: "Pre-Registrations", results: (preRegs?.items ?? []).map((p) => ({ id: p.id, icon: ClipboardList, label: p.name, sublabel: `${p.id} • ${p.eventName}`, to: `/pre-registrations?search=${encodeURIComponent(p.id)}` })) },
+        { label: "Accounts", results: (users?.users ?? []).map((u) => ({ id: u.id, icon: ShieldCheck, label: u.name, sublabel: `@${u.username} • ${roleLabel(u.role)}`, to: `/users?search=${encodeURIComponent(u.username)}` })) },
       ].filter((g) => g.results.length > 0);
       setSearchGroups(groups);
     })();
@@ -198,6 +256,8 @@ export default function Layout() {
     return () => document.removeEventListener("mousedown", handler);
   }, [searchOpen]);
 
+  // Logging out asks first, so a stray click does not end the session.
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const handleLogout = () => {
     clearSession();
     navigate("/login");
@@ -282,7 +342,7 @@ export default function Layout() {
             <div className="flex flex-col items-center gap-2">
               <div className="w-8 h-8 bg-[#7C2D3E] rounded-full flex items-center justify-center text-white text-xs font-bold" title={`${currentUser.name} — ${roleLabel(currentUser.role)}`}>{initials}</div>
               <button
-                onClick={handleLogout}
+                onClick={() => setLogoutOpen(true)}
                 title="Log out"
                 className="p-2 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/8 transition-colors cursor-pointer"
               >
@@ -291,15 +351,15 @@ export default function Layout() {
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/8 cursor-pointer">
+              <Link to="/profile" title="My profile" className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/8 cursor-pointer">
                 <div className="w-8 h-8 bg-[#7C2D3E] rounded-full flex items-center justify-center flex-shrink-0 text-white text-xs font-bold">{initials}</div>
                 <div className="flex-1 min-w-0">
                   <div className="text-white text-xs font-medium truncate">{currentUser.name}</div>
                   <div className="text-[#6B7280] text-[10px]">{roleLabel(currentUser.role)}</div>
                 </div>
-              </div>
+              </Link>
               <button
-                onClick={handleLogout}
+                onClick={() => setLogoutOpen(true)}
                 className="mt-1 flex items-center gap-3 px-3 py-2 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/8 text-sm w-full cursor-pointer transition-colors"
               >
                 <LogOut className="w-4 h-4" />
@@ -345,7 +405,7 @@ export default function Layout() {
                 onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
                 onFocus={() => searchQuery && setSearchOpen(true)}
                 onKeyDown={handleSearchKeyDown}
-                placeholder="Quick search..."
+                placeholder={currentUser.role === "SUPER_ADMIN" ? "Quick search: accounts, events..." : "Quick search: donors, units..."}
                 className="pl-9 pr-8 py-1.5 border border-[#E8E5E2] rounded-lg text-sm bg-[#F9F8F7] focus:outline-none focus:ring-2 focus:ring-[#7C2D3E]/20 focus:border-[#7C2D3E] w-52 text-[#1C1C2E]"
               />
               {searchQuery && (
@@ -411,13 +471,32 @@ export default function Layout() {
                     <span className="font-semibold text-sm text-[#1C1C2E]">Notifications</span>
                     <span className="text-xs text-[#6B7280]">{notifications.length}</span>
                   </div>
+                  <div className="flex gap-1.5 px-3 py-2 border-b border-[#F3F0ED] overflow-x-auto" role="tablist" aria-label="Notification categories">
+                    {(["all", ...CATEGORIES] as const).map((c) => {
+                      const count = c === "all" ? notifications.length : notifications.filter((n) => n.category === c).length;
+                      const active = notifTab === c;
+                      return (
+                        <button
+                          key={c}
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setNotifTab(c)}
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap border cursor-pointer transition-colors ${
+                            active ? "bg-[#7C2D3E] text-white border-[#7C2D3E]" : "bg-white text-[#6B7280] border-[#E8E5E2] hover:bg-[#F9F8F7]"
+                          }`}
+                        >
+                          {c === "all" ? "All" : CATEGORY_META[c].label} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
                   <div className="max-h-80 overflow-y-auto">
-                    {notifications.length === 0 ? (
+                    {visibleNotifs.length === 0 ? (
                       <div className="px-4 py-8 text-center text-sm text-[#6B7280]">
-                        You&apos;re all caught up.
+                        {notifTab === "all" ? "You're all caught up." : "Nothing in this category."}
                       </div>
                     ) : (
-                      notifications.map((n) => {
+                      visibleNotifs.map((n) => {
                         const Icon = n.icon;
                         return (
                           <Link
@@ -429,7 +508,12 @@ export default function Layout() {
                             <div className={`p-1.5 rounded-lg flex-shrink-0 ${n.iconClass}`}>
                               <Icon className="w-3.5 h-3.5" />
                             </div>
-                            <span className="text-xs text-[#1C1C2E] leading-relaxed">{n.text}</span>
+                            <div className="min-w-0">
+                              <span className={`inline-block text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border mb-1 ${CATEGORY_META[n.category].chip}`}>
+                                {CATEGORY_META[n.category].label}
+                              </span>
+                              <div className="text-xs text-[#1C1C2E] leading-relaxed">{n.text}</div>
+                            </div>
                           </Link>
                         );
                       })
@@ -438,7 +522,15 @@ export default function Layout() {
                 </div>
               )}
             </div>
-            <div className="w-8 h-8 bg-[#7C2D3E] rounded-full flex items-center justify-center text-white text-xs font-bold cursor-pointer" title={`${currentUser.name} — ${roleLabel(currentUser.role)}`}>{initials}</div>
+            <Link
+              to="/profile"
+              data-testid="profile-icon"
+              aria-label="My profile"
+              className="w-8 h-8 bg-[#7C2D3E] hover:bg-[#6B2535] rounded-full flex items-center justify-center text-white text-xs font-bold cursor-pointer transition-colors"
+              title={`${currentUser.name} — ${roleLabel(currentUser.role)} (open my profile)`}
+            >
+              {initials}
+            </Link>
           </div>
         </header>
 
@@ -447,6 +539,15 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      <ConfirmDialog
+        open={logoutOpen}
+        onClose={() => setLogoutOpen(false)}
+        onConfirm={handleLogout}
+        title="Log out"
+        message="Are you sure you want to log out?"
+        confirmLabel="Confirm Logout"
+      />
     </div>
   );
 }

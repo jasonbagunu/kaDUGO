@@ -1,27 +1,35 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { Plus, Eye, Pencil, Trash2 } from "lucide-react";
+import { Plus, Eye, Pencil, Trash2, AlertTriangle } from "lucide-react";
 import {
   Badge, PageHeader, PrimaryButton, SearchInput, Select, Table, Td,
-  Modal, ConfirmDialog, Toast, FormField, TextInput, SelectInput, SecondaryButton,
+  Modal, ConfirmDialog, Toast, SecondaryButton,
 } from "../components/ui";
+import DonorFormFields, { EMPTY_DONOR_FORM, donorFormProblem, type DonorForm } from "../components/DonorFormFields";
+import PasswordConfirmModal from "../components/PasswordConfirmModal";
+import Pagination from "../components/Pagination";
 import { useData } from "../context/DataContext";
-import { api, errorMessage, type ApiDonor, type Paged } from "../lib/api";
+import { ApiError, api, errorMessage, type ApiDonor, type ApiDonorSensitive, type ApiDuplicateDonor, type Paged } from "../lib/api";
+import { getRevealToken } from "../lib/reveal";
 import { getSession } from "../lib/session";
 import { useApi, useDebounced } from "../lib/useApi";
 
 type Donor = ApiDonor;
 
-const BT_OPTS = [
-  { label: "Select blood type", value: "" },
+const BT_FILTER_OPTS = [
+  { label: "All Blood Types", value: "" },
   ...["A+","A-","B+","B-","AB+","AB-","O+","O-"].map((b) => ({ label: b, value: b })),
 ];
-const BT_FILTER_OPTS = [{ label: "All Blood Types", value: "" }, ...BT_OPTS.slice(1)];
 const STATUS_OPTS = [
   { label: "All Status", value: "" },
   { label: "Active", value: "Active" },
   { label: "Deferred", value: "Deferred" },
   { label: "Inactive", value: "Inactive" },
+];
+const SORT_OPTS = [
+  { label: "Newest first", value: "newest" },
+  { label: "Oldest first", value: "oldest" },
+  { label: "Name A–Z", value: "name" },
 ];
 const DONOR_STATUS_OPTS = [
   { label: "Active", value: "Active" },
@@ -29,14 +37,7 @@ const DONOR_STATUS_OPTS = [
   { label: "Inactive", value: "Inactive" },
 ];
 
-type DonorForm = {
-  name: string; dob: string; sex: string; contact: string;
-  email: string; address: string; bloodType: string; status: string;
-};
-
-const EMPTY_FORM: DonorForm = {
-  name: "", dob: "", sex: "", contact: "", email: "", address: "", bloodType: "", status: "Active",
-};
+const fmtDate = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
 
 export default function Donors() {
   const { toast, showToast } = useData();
@@ -45,9 +46,15 @@ export default function Donors() {
   const [search, setSearch] = useState("");
   const [bloodTypeFilter, setBloodTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [sort, setSort] = useState("newest");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const q = useDebounced(search.trim(), 300);
 
-  const params = new URLSearchParams({ pageSize: "500" });
+  // Any change to the search, filters or page size starts again from page 1.
+  useEffect(() => { setPage(1); }, [q, bloodTypeFilter, statusFilter, sort, pageSize]);
+
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sort });
   if (q) params.set("search", q);
   if (bloodTypeFilter) params.set("bloodType", bloodTypeFilter);
   if (statusFilter) params.set("status", statusFilter);
@@ -58,39 +65,81 @@ export default function Donors() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Donor | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Donor | null>(null);
-  const [form, setForm] = useState<DonorForm>(EMPTY_FORM);
+  const [form, setForm] = useState<DonorForm>(EMPTY_DONOR_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [duplicates, setDuplicates] = useState<{ code: string; items: ApiDuplicateDonor[] } | null>(null);
+  // Password confirmation (needed before protected details are shown or changed)
+  const [askPassword, setAskPassword] = useState<null | (() => void)>(null);
 
-  const set = (k: keyof DonorForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = <K extends keyof DonorForm>(k: K, v: DonorForm[K]) => setForm((f) => ({ ...f, [k]: v }));
 
-  const openAdd = () => { setEditTarget(null); setForm(EMPTY_FORM); setFormError(""); setModalOpen(true); };
-  const openEdit = (d: Donor) => {
-    setEditTarget(d);
-    setForm({ name: d.name, dob: d.dob, sex: d.sex, contact: d.contact, email: d.email, address: d.address, bloodType: d.bloodType, status: d.status });
-    setFormError("");
-    setModalOpen(true);
+  const openAdd = () => {
+    setEditTarget(null); setForm(EMPTY_DONOR_FORM); setFormError(""); setDuplicates(null); setModalOpen(true);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.bloodType || !form.sex) return;
+  // Loads the protected details of one donor into the edit form.
+  const loadForEdit = async (d: Donor) => {
+    try {
+      const { sensitive } = await api<{ sensitive: ApiDonorSensitive }>(`/donors/${d.id}/sensitive`);
+      const a = sensitive.addressDetails;
+      setEditTarget(d);
+      setForm({
+        name: d.name, dob: sensitive.dob, sex: d.sex, contact: sensitive.contact, email: sensitive.email,
+        address: {
+          street: a?.street ?? "", regionCode: a?.region.code ?? "", provinceCode: a?.province.code ?? "",
+          cityCode: a?.city.code ?? "", barangayCode: a?.barangay.code ?? "",
+        },
+        bloodType: d.bloodType, status: d.status, physicianCleared: false,
+      });
+      setFormError(
+        a ? "" : "This record has an older, typed address. Please choose the address from the lists before saving.",
+      );
+      setDuplicates(null);
+      setModalOpen(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "REAUTH_REQUIRED") setAskPassword(() => () => void loadForEdit(d));
+      else showToast(errorMessage(err), "error");
+    }
+  };
+
+  const openEdit = (d: Donor) => {
+    if (getRevealToken()) void loadForEdit(d);
+    else setAskPassword(() => () => void loadForEdit(d));
+  };
+
+  const submit = async (confirmNotDuplicate = false) => {
+    const problem = donorFormProblem(form);
+    if (problem) { setFormError(problem); return; }
     setSaving(true);
     setFormError("");
+    const body = {
+      name: form.name.trim(), dob: form.dob, sex: form.sex, bloodType: form.bloodType, contact: form.contact,
+      email: form.email.trim(), address: form.address, status: form.status,
+      confirmAgeException: form.physicianCleared || undefined,
+      confirmNotDuplicate: confirmNotDuplicate || undefined,
+    };
     try {
       if (editTarget) {
-        await api(`/donors/${editTarget.id}`, { method: "PATCH", body: form });
-        setModalOpen(false);
-        await list.reload();
+        await api(`/donors/${editTarget.id}`, { method: "PATCH", body });
         showToast(`Donor "${form.name}" updated successfully.`);
       } else {
-        const { donor } = await api<{ donor: ApiDonor }>("/donors", { method: "POST", body: form });
-        setModalOpen(false);
-        await list.reload();
+        const { donor } = await api<{ donor: ApiDonor }>("/donors", { method: "POST", body });
         showToast(`Donor "${donor.name}" registered as ${donor.id}. To record a donation, use the Donations module.`);
       }
+      setModalOpen(false);
+      setForm(EMPTY_DONOR_FORM);
+      setDuplicates(null);
+      await list.reload();
     } catch (err) {
-      setFormError(errorMessage(err));
+      if (err instanceof ApiError && (err.code === "POSSIBLE_DUPLICATE" || err.code === "DUPLICATE_DONOR")) {
+        setDuplicates({ code: err.code, items: (err.data.duplicates as ApiDuplicateDonor[]) ?? [] });
+        setFormError(err.message);
+      } else if (err instanceof ApiError && err.code === "REAUTH_REQUIRED") {
+        setAskPassword(() => () => void submit(confirmNotDuplicate));
+      } else {
+        setFormError(errorMessage(err));
+      }
     } finally {
       setSaving(false);
     }
@@ -102,6 +151,7 @@ export default function Donors() {
     setDeleteTarget(null);
     try {
       await api(`/donors/${target.id}`, { method: "DELETE" });
+      if (donors.length === 1 && page > 1) setPage(page - 1);
       await list.reload();
       showToast(`Donor "${target.name}" removed.`, "warning");
     } catch (err) {
@@ -128,22 +178,34 @@ export default function Donors() {
           <SearchInput value={search} onChange={setSearch} placeholder="Search donor name, ID, contact..." />
           <Select value={bloodTypeFilter} onChange={setBloodTypeFilter} options={BT_FILTER_OPTS} />
           <Select value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTS} />
-          <span className="text-xs text-[#6B7280] ml-auto">{filtered.length} results</span>
+          <Select value={sort} onChange={setSort} options={SORT_OPTS} />
+          <span className="text-xs text-[#6B7280] ml-auto">{total} results</span>
         </div>
 
-        <Table headers={["Donor ID", "Donor Name", "Blood Type", "Contact", "Last Donation", "Total Donations", "Status", "Actions"]}>
+        <Table headers={["Donor ID", "Donor Name", "Blood Type", "Contact", "Last Donation", "Next Eligible", "Total Donations", "Status", "Actions"]}>
           {filtered.map((d) => (
             <tr key={d.id} className="hover:bg-[#F9F8F7] transition-colors">
               <Td><span className="text-xs font-mono text-[#6B7280]">{d.id}</span></Td>
               <Td>
                 <div className="font-medium text-[#1C1C2E]">{d.name}</div>
-                <div className="text-xs text-[#6B7280]">{d.email}</div>
+                <div className="text-xs text-[#6B7280]">{d.age} yrs · {d.sex}</div>
               </Td>
               <Td>
                 <span className="inline-flex items-center justify-center w-9 h-6 bg-[#FDF2F4] text-[#7C2D3E] rounded text-xs font-bold border border-[#F0D0D6]">{d.bloodType}</span>
               </Td>
               <Td><span className="text-sm text-[#6B7280]">{d.contact}</span></Td>
               <Td><span className="text-sm text-[#6B7280]">{d.lastDonation ?? "—"}</span></Td>
+              <Td>
+                {d.eligibility.eligible ? (
+                  <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-800 border border-green-200">Eligible now</span>
+                ) : d.eligibility.nextEligibleDate && d.eligibility.daysRemaining > 0 ? (
+                  <span title={d.eligibility.reason ?? ""} className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                    {fmtDate(d.eligibility.nextEligibleDate)}
+                  </span>
+                ) : (
+                  <span title={d.eligibility.reason ?? ""} className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">Not eligible</span>
+                )}
+              </Td>
               <Td>
                 <span className="font-semibold text-[#1C1C2E]">{d.totalDonations}</span>
                 <span className="text-xs text-[#6B7280] ml-1">donations</span>
@@ -183,9 +245,7 @@ export default function Donors() {
           </div>
         )}
 
-        <div className="px-4 py-3 border-t border-[#E8E5E2] flex items-center justify-between text-xs text-[#6B7280]">
-          <span>Showing {filtered.length} of {total} donors</span>
-        </div>
+        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} />
       </div>
 
       {/* Add / Edit modal */}
@@ -195,49 +255,49 @@ export default function Donors() {
         title={editTarget ? `Edit Donor — ${editTarget.name}` : "Register New Donor"}
         size="lg"
       >
-        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+        <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="space-y-4">
           {formError && <div role="alert" className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2.5">{formError}</div>}
+
+          {duplicates && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-900" data-testid="duplicate-panel">
+              <div className="flex items-center gap-2 font-semibold mb-2">
+                <AlertTriangle className="w-4 h-4" />
+                {duplicates.code === "DUPLICATE_DONOR" ? "This donor already exists" : "Possible duplicate donors"}
+              </div>
+              <ul className="space-y-1.5">
+                {duplicates.items.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between gap-3 bg-white/70 rounded-lg px-3 py-2 text-xs">
+                    <span>
+                      <b>{m.name}</b> · {m.id} · {m.age} yrs · {m.bloodType} · {m.contact}
+                      <span className="block text-amber-700">{m.reason}</span>
+                    </span>
+                    <Link to={`/donors/${m.id}`} className="font-medium text-[#7C2D3E] underline whitespace-nowrap">Open record</Link>
+                  </li>
+                ))}
+              </ul>
+              {duplicates.code === "POSSIBLE_DUPLICATE" && (
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void submit(true)}
+                    className="px-3 py-1.5 rounded-lg bg-[#7C2D3E] text-white text-xs font-medium hover:bg-[#6a2535] cursor-pointer disabled:opacity-60"
+                  >
+                    This is a different person — save anyway
+                  </button>
+                  <span className="text-xs">Otherwise, open the existing record above.</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {!editTarget && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
               <strong>Note:</strong> Adding a donor here registers them in the system. To record an actual donation (which creates the linked blood unit), use the <strong>Donations</strong> module or use <strong>Record Donation</strong> for an arrived pre-registrant in Event Details.
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <FormField label="Full Name" required>
-                <TextInput value={form.name} onChange={(v) => set("name", v)} placeholder="e.g. Maria Luisa Santos" required />
-              </FormField>
-            </div>
-            <FormField label="Date of Birth" required>
-              <TextInput type="date" value={form.dob} onChange={(v) => set("dob", v)} required />
-            </FormField>
-            <FormField label="Sex" required>
-              <SelectInput
-                value={form.sex}
-                onChange={(v) => set("sex", v)}
-                options={[{ label: "Select sex", value: "" }, { label: "Male", value: "Male" }, { label: "Female", value: "Female" }]}
-                required
-              />
-            </FormField>
-            <FormField label="Contact Number" required>
-              <TextInput value={form.contact} onChange={(v) => set("contact", v)} placeholder="09xxxxxxxxx" required />
-            </FormField>
-            <FormField label="Email Address">
-              <TextInput type="email" value={form.email} onChange={(v) => set("email", v)} placeholder="donor@email.com" />
-            </FormField>
-            <div className="col-span-2">
-              <FormField label="Address" required>
-                <TextInput value={form.address} onChange={(v) => set("address", v)} placeholder="City, Province" required />
-              </FormField>
-            </div>
-            <FormField label="Blood Type" required>
-              <SelectInput value={form.bloodType} onChange={(v) => set("bloodType", v)} options={BT_OPTS} required />
-            </FormField>
-            <FormField label="Status">
-              <SelectInput value={form.status} onChange={(v) => set("status", v)} options={DONOR_STATUS_OPTS} />
-            </FormField>
-          </div>
+          <DonorFormFields form={form} set={set} statusOptions={DONOR_STATUS_OPTS} />
 
           <div className="flex items-center gap-3 pt-4 border-t border-[#E8E5E2]">
             <PrimaryButton type="submit" disabled={saving}>
@@ -247,6 +307,13 @@ export default function Donors() {
           </div>
         </form>
       </Modal>
+
+      <PasswordConfirmModal
+        open={askPassword !== null}
+        onClose={() => setAskPassword(null)}
+        onConfirmed={() => { const next = askPassword; setAskPassword(null); next?.(); }}
+        reason="view or change protected donor details"
+      />
 
       {/* Delete confirmation */}
       <ConfirmDialog
