@@ -13,6 +13,7 @@ import { ApiError, api, errorMessage, type ApiDonor, type ApiDonorSensitive, typ
 import { getRevealToken } from "../lib/reveal";
 import { getSession } from "../lib/session";
 import { useApi, useDebounced } from "../lib/useApi";
+import PreRegPicker from "../components/PreRegPicker";
 
 type Donor = ApiDonor;
 
@@ -74,7 +75,11 @@ export default function Donors() {
 
   const set = <K extends keyof DonorForm>(k: K, v: DonorForm[K]) => setForm((f) => ({ ...f, [k]: v }));
 
+  // Add Donor has two ways in: type the details, or pick someone who pre-registered.
+  const [addMode, setAddMode] = useState<"manual" | "prereg">("manual");
+
   const openAdd = () => {
+    setAddMode("manual");
     setEditTarget(null); setForm(EMPTY_DONOR_FORM); setFormError(""); setDuplicates(null); setModalOpen(true);
   };
 
@@ -291,20 +296,46 @@ export default function Donors() {
             </div>
           )}
 
-          {!editTarget && (
+          {!editTarget && addMode === "manual" && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
               <strong>Note:</strong> Adding a donor here registers them in the system. To record an actual donation (which creates the linked blood unit), use the <strong>Donations</strong> module or use <strong>Record Donation</strong> for an arrived pre-registrant in Event Details.
             </div>
           )}
 
-          <DonorFormFields form={form} set={set} statusOptions={DONOR_STATUS_OPTS} />
+          {!editTarget && (
+            <div className="grid grid-cols-2 gap-1 p-1 bg-[#F3F0ED] rounded-lg" role="tablist" aria-label="How to add the donor">
+              {([["manual", "Type details manually"], ["prereg", "From a pre-registration"]] as const).map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={addMode === k}
+                  onClick={() => setAddMode(k)}
+                  className={`py-2 rounded-md text-sm font-medium cursor-pointer transition-colors ${addMode === k ? "bg-white text-[#7C2D3E] shadow-sm" : "text-[#6B7280] hover:text-[#1C1C2E]"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
 
-          <div className="flex items-center gap-3 pt-4 border-t border-[#E8E5E2]">
-            <PrimaryButton type="submit" disabled={saving}>
-              {saving ? "Saving..." : editTarget ? "Save Changes" : "Register Donor"}
-            </PrimaryButton>
-            <SecondaryButton onClick={() => setModalOpen(false)}>Cancel</SecondaryButton>
-          </div>
+          {!editTarget && addMode === "prereg" ? (
+            <PreRegPicker
+              onDone={(msg) => { setModalOpen(false); void list.reload(); showToast(msg); }}
+              onCancel={() => setModalOpen(false)}
+            />
+          ) : (
+            <>
+              <DonorFormFields form={form} set={set} statusOptions={DONOR_STATUS_OPTS} />
+
+              <div className="flex items-center gap-3 pt-4 border-t border-[#E8E5E2]">
+                <PrimaryButton type="submit" disabled={saving}>
+                  {saving ? "Saving..." : editTarget ? "Save Changes" : "Register Donor"}
+                </PrimaryButton>
+                <SecondaryButton onClick={() => setModalOpen(false)}>Cancel</SecondaryButton>
+              </div>
+            </>
+          )}
         </form>
       </Modal>
 

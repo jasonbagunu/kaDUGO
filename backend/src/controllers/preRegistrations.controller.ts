@@ -18,6 +18,8 @@ const listQuerySchema = z.object({
   eventId: z.string().trim().optional(),
   attendance: attendanceInput.optional(),
   search: z.string().trim().optional(),
+  // "true": only people who are not yet linked to a donor record (used by Donors > Add Donor)
+  unregistered: z.enum(["true", "false"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(500).default(200),
 });
@@ -61,11 +63,12 @@ function serialize(p: PreRegWithRelations) {
 }
 
 export const listPreRegistrations = asyncHandler(async (req, res) => {
-  const { eventId, attendance, search, page, pageSize } = listQuerySchema.parse(req.query);
+  const { eventId, attendance, search, unregistered, page, pageSize } = listQuerySchema.parse(req.query);
 
   const where: Prisma.PreRegistrationWhereInput = {
     ...(eventId ? { eventId } : {}),
     ...(attendance ? { attendance } : {}),
+    ...(unregistered === "true" ? { donorId: null } : {}),
     ...(search
       ? {
           OR: [
@@ -158,6 +161,8 @@ export const updatePreRegistration = asyncHandler(async (req, res) => {
 const registerDonorSchema = z.object({
   // Only needed when the person did not know their blood type when signing up.
   bloodType: z.preprocess(emptyToUndefined, bloodTypeInput.optional()),
+  // Set by Donors > Add Donor > "From a pre-registration": register before the person has arrived.
+  allowNotArrived: z.boolean().optional(),
 });
 
 // "Donor is registered/verified": turns an arrived pre-registrant into a donor
@@ -165,7 +170,7 @@ const registerDonorSchema = z.object({
 // donation can be recorded against it. Admin and MedTech only.
 export const registerDonorFromPreReg = asyncHandler(async (req, res) => {
   const actor = req.user!;
-  const { bloodType: bloodTypeOverride } = registerDonorSchema.parse(req.body ?? {});
+  const { bloodType: bloodTypeOverride, allowNotArrived } = registerDonorSchema.parse(req.body ?? {});
 
   const preReg = await prisma.preRegistration.findUnique({
     where: { id: String(req.params.id) },
@@ -182,7 +187,7 @@ export const registerDonorFromPreReg = asyncHandler(async (req, res) => {
     }
   }
 
-  if (preReg.attendance !== "ARRIVED") {
+  if (preReg.attendance !== "ARRIVED" && !allowNotArrived) {
     throw new AppError(409, "Mark this person as Arrived before registering them as a donor.");
   }
   if (!preReg.dob || !preReg.sex) {
