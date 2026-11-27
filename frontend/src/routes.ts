@@ -19,6 +19,7 @@ import Analytics from "./pages/Analytics";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
+import UserManual from "./pages/UserManual";
 import AuditLogs from "./pages/AuditLogs";
 import AccessDenied from "./pages/AccessDenied";
 
@@ -59,6 +60,7 @@ export const router = createBrowserRouter([
               { path: "events/:id", Component: EventDetail },
               { path: "pre-registrations", Component: PreRegistrations },
               { path: "profile", Component: Profile },
+              { path: "manual", Component: UserManual },
             ],
           },
 

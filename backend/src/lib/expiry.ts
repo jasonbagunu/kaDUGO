@@ -1,6 +1,7 @@
 import type { UnitStatus } from "@prisma/client";
 import { prisma } from "./prisma";
 import { manilaToday } from "./today";
+import { publishChange } from "../realtime";
 
 // Units still in play that expire when their date passes. Not Usable and
 // Expired units are already out of stock.
@@ -35,6 +36,8 @@ export async function sweepExpiredUnits(force = false): Promise<number> {
         data: ids.map((unitId) => ({ unitId, action: "Expired", note: "Passed its expiration date" })),
       });
     });
+    // Open screens (inventory, alerts) refresh themselves when units expire.
+    publishChange(["blood-units", "inventory", "dashboard", "analytics", "notifications"]);
     return ids.length;
   } finally {
     running = false;

@@ -5,6 +5,7 @@ import { PageHeader, SecondaryButton, Toast } from "../components/ui";
 import { useData } from "../context/DataContext";
 import { type ApiOverview } from "../lib/api";
 import { useApi } from "../lib/useApi";
+import { formatStock } from "../lib/stock";
 import { generateReportPDF, exportDataPDF, exportDataExcel, AnalyticsReportData } from "../lib/exportAnalytics";
 
 const DATE_RANGE_LABELS: Record<string, string> = {
@@ -165,7 +166,7 @@ export default function Analytics() {
               <CartesianGrid strokeDasharray="3 3" stroke="#F3F0ED" />
               <XAxis dataKey="type" tick={{ fontSize: 11, fill: "#9CA3AF" }} />
               <YAxis tick={{ fontSize: 11, fill: "#9CA3AF" }} />
-              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #E8E5E2" }} />
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #E8E5E2" }} formatter={(v) => [formatStock(Number(v)), "Usable Units"]} />
               <Bar dataKey="units" fill="#7C2D3E" radius={[4, 4, 0, 0]} name="Usable Units" />
             </BarChart>
           </ResponsiveContainer>

@@ -17,6 +17,7 @@ import dashboardRoutes from "./routes/dashboard.routes";
 import backupRoutes from "./routes/backup.routes";
 import publicRoutes from "./routes/public.routes";
 import { errorHandler, notFound } from "./middleware/errorHandler";
+import { announceChanges } from "./realtime";
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use(
   })
 );
 app.use(express.json({ limit: "1mb" }));
+app.use(announceChanges); // tells open browsers about saved changes (live updates)
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "kadugo-backend" });

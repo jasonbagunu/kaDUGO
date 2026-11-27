@@ -5,6 +5,7 @@ import { PageHeader, SearchInput, Select, Table, Td, Badge } from "../components
 import type { ApiInventorySummary, ApiUnit, Paged } from "../lib/api";
 import { useApi, useDebounced } from "../lib/useApi";
 import Pagination from "../components/Pagination";
+import { formatStock, isNoStock } from "../lib/stock";
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] as const;
 type BT = typeof BLOOD_TYPES[number];
@@ -60,7 +61,7 @@ export default function Inventory() {
       {/* Summary KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "Total Usable Units", value: totalUsable, color: "text-green-700", bg: "bg-green-50 border-green-200", icon: Package },
+          { label: "Total Usable Units", value: formatStock(totalUsable), color: "text-green-700", bg: "bg-green-50 border-green-200", icon: Package },
           { label: "Quarantined", value: totalQ, color: "text-amber-700", bg: "bg-amber-50 border-amber-200", icon: AlertTriangle },
           { label: "Not Usable", value: totalNU, color: "text-red-700", bg: "bg-red-50 border-red-200", icon: AlertTriangle },
           { label: "Expiring Soon", value: totalExp, color: "text-amber-700", bg: "bg-amber-50 border-amber-200", icon: Clock },
@@ -90,8 +91,8 @@ export default function Inventory() {
             return (
               <div key={bt} className={`bg-white rounded-xl border shadow-sm p-4 text-center ${isLow ? "border-[#7C2D3E]/40" : "border-[#E8E5E2]"}`}>
                 <div className={`text-xl font-bold mb-1 ${isLow ? "text-[#7C2D3E]" : "text-[#1C1C2E]"}`} style={{ fontFamily: "Outfit, sans-serif" }}>{bt}</div>
-                <div className="text-3xl font-bold text-[#1C1C2E]" style={{ fontFamily: "Outfit, sans-serif" }}>{data.usable}</div>
-                <div className="text-[10px] text-[#9CA3AF] mb-2">usable</div>
+                <div className={`font-bold text-[#1C1C2E] ${isNoStock(data.usable) ? "text-base leading-[2.25rem] text-[#7C2D3E]" : "text-3xl"}`} style={{ fontFamily: "Outfit, sans-serif" }}>{formatStock(data.usable)}</div>
+                <div className="text-[10px] text-[#9CA3AF] mb-2">{isNoStock(data.usable) ? "usable stock" : "usable"}</div>
                 <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div className={`h-full rounded-full transition-all ${isLow ? "bg-[#7C2D3E]" : "bg-green-600"}`} style={{ width: `${pct}%` }} />
                 </div>

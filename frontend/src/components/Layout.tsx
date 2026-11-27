@@ -4,9 +4,10 @@ import {
   LayoutDashboard, Users, Droplets, FlaskConical, Package,
   Calendar, BarChart3, Settings, ShieldCheck, LogOut,
   Bell, Search, ChevronRight, Droplet, Activity, PanelLeftClose, PanelLeftOpen, Menu,
-  AlertTriangle, Clock, CalendarClock, User as UserIcon, X, ClipboardList, History, Siren, ServerCog, Info, TestTube2,
+  BookOpen, AlertTriangle, Clock, CalendarClock, User as UserIcon, X, ClipboardList, History, Siren, ServerCog, Info, TestTube2,
 } from "lucide-react";
 import { ConfirmDialog } from "./ui";
+import { onLiveStatus, onTopic, startLive, stopLive, type LiveStatus } from "../lib/realtime";
 import { api, type ApiDonation, type ApiDonor, type ApiEvent, type ApiInventorySummary, type ApiAuditLog, type ApiUnit, type ApiUser, type ApiPreReg, type Paged } from "../lib/api";
 import { useDebounced } from "../lib/useApi";
 import { clearSession, getSession, roleLabel } from "./RequireAuth";
@@ -27,6 +28,7 @@ const navItems: { to: string; label: string; icon: typeof LayoutDashboard; end?:
   { to: "/analytics", label: "Analytics & Reports", icon: BarChart3, roles: ["ADMIN", "MEDTECH"] },
   { to: "/users", label: "Users & Access", icon: ShieldCheck, roles: ["SUPER_ADMIN", "ADMIN"] },
   { to: "/audit-logs", label: "Audit Logs", icon: History, roles: ["SUPER_ADMIN"] },
+  { to: "/manual", label: "User Manual", icon: BookOpen, roles: ALL_ROLES },
   { to: "/settings", label: "Settings", icon: Settings, roles: ["SUPER_ADMIN"] },
 ];
 
@@ -37,6 +39,7 @@ const pageTitles: Record<string, { title: string; breadcrumbs: string[] }> = {
   "/blood-units": { title: "Blood Units", breadcrumbs: ["Blood Units"] },
   "/testing": { title: "Blood Testing", breadcrumbs: ["Blood Testing"] },
   "/inventory": { title: "Inventory", breadcrumbs: ["Inventory"] },
+  "/manual": { title: "User Manual", breadcrumbs: ["User Manual"] },
   "/events": { title: "Donation Events", breadcrumbs: ["Donation Events"] },
   "/pre-registrations": { title: "Pre-Registrations", breadcrumbs: ["Pre-Registrations"] },
   "/analytics": { title: "Analytics & Reports", breadcrumbs: ["Analytics & Reports"] },
@@ -87,6 +90,22 @@ export default function Layout() {
   // Super Admin has no blood-bank records, so only the categories that apply to them are listed.
   const CATEGORIES: NotifCategory[] = currentUser.role === "SUPER_ADMIN" ? ["events", "system"] : ["emergency", "events", "other"];
 
+  // Live updates: connect while signed in, and re-read the alerts whenever the
+  // server says something changed (a unit quarantined, an event added, ...).
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>("off");
+  const [liveTick, setLiveTick] = useState(0);
+  useEffect(() => {
+    if (!session) return;
+    startLive();
+    const offStatus = onLiveStatus(setLiveStatus);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const offTopic = onTopic("notifications", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setLiveTick((t) => t + 1), 500);
+    });
+    return () => { offStatus(); offTopic(); clearTimeout(timer); stopLive(); };
+  }, [session?.userId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notifTab, setNotifTab] = useState<"all" | NotifCategory>("all");
 
@@ -127,7 +146,7 @@ export default function Layout() {
         for (const t of inventory?.byBloodType.filter((b) => b.isLowStock) ?? []) {
           list.push({
             id: `lowstock-${t.bloodType}`, category: "emergency", icon: Siren, iconClass: "text-red-600 bg-red-50",
-            text: `Low stock: only ${t.usable} usable ${t.bloodType} unit${t.usable === 1 ? "" : "s"} (minimum ${t.lowStockThreshold}).`,
+            text: t.usable === 0 ? `No Blood: no usable ${t.bloodType} units in stock (minimum ${t.lowStockThreshold}).` : `Low stock: only ${t.usable} usable ${t.bloodType} unit${t.usable === 1 ? "" : "s"} (minimum ${t.lowStockThreshold}).`,
             to: "/inventory",
           });
         }
@@ -173,7 +192,25 @@ export default function Layout() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, session?.userId]);
+  }, [location.pathname, session?.userId, liveTick]);
+
+  // Read state is per user and stored in this browser only. An alert is keyed by id + text,
+  // so if its content changes (e.g. the stock count) it shows up as unread again.
+  const readKey = `kadugo.readNotifs.${session?.userId ?? "anon"}`;
+  const [readSet, setReadSet] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem(readKey) ?? "[]")); } catch { return new Set<string>(); }
+  });
+  useEffect(() => {
+    try { setReadSet(new Set<string>(JSON.parse(localStorage.getItem(readKey) ?? "[]"))); } catch { setReadSet(new Set<string>()); }
+  }, [readKey]);
+  const sig = (n: Notification) => `${n.id}|${n.text}`;
+  const isRead = (n: Notification) => readSet.has(sig(n));
+  const persistRead = (next: Set<string>) => {
+    setReadSet(next);
+    try { localStorage.setItem(readKey, JSON.stringify([...next])); } catch { /* storage unavailable: read state lasts for this session only */ }
+  };
+  const markRead = (list: Notification[]) => persistRead(new Set([...readSet, ...list.map(sig)]));
+  const unreadCount = notifications.filter((n) => !isRead(n)).length;
 
   const visibleNotifs = notifTab === "all" ? notifications : notifications.filter((n) => n.category === notifTab);
 
@@ -455,13 +492,23 @@ export default function Layout() {
                 </div>
               )}
             </div>
+            <span
+              data-testid="live-status"
+              title={liveStatus === "live" ? "Live updates are on: changes appear without refreshing." : liveStatus === "off" ? "Live updates are off." : "Reconnecting to live updates..."}
+              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border ${
+                liveStatus === "live" ? "bg-green-50 text-green-700 border-green-200" : "bg-amber-50 text-amber-700 border-amber-200"
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${liveStatus === "live" ? "bg-green-500" : "bg-amber-500"}`} />
+              {liveStatus === "live" ? "Live" : liveStatus === "off" ? "Offline" : "Reconnecting"}
+            </span>
             <div className="relative" ref={notifRef}>
               <button
                 onClick={() => setNotifOpen((o) => !o)}
                 className="relative p-2 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
               >
                 <Bell className="w-4.5 h-4.5 text-[#6B7280]" />
-                {notifications.length > 0 && (
+                {unreadCount > 0 && (
                   <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#7C2D3E] rounded-full" />
                 )}
               </button>
@@ -469,11 +516,21 @@ export default function Layout() {
                 <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl border border-[#E8E5E2] shadow-lg z-50 overflow-hidden">
                   <div className="px-4 py-3 border-b border-[#E8E5E2] flex items-center justify-between">
                     <span className="font-semibold text-sm text-[#1C1C2E]">Notifications</span>
-                    <span className="text-xs text-[#6B7280]">{notifications.length}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-[#6B7280]">{unreadCount} unread</span>
+                      <button
+                        type="button"
+                        onClick={() => markRead(notifications)}
+                        disabled={unreadCount === 0}
+                        className="text-xs font-medium text-[#7C2D3E] hover:underline disabled:text-[#9CA3AF] disabled:no-underline disabled:cursor-default cursor-pointer"
+                      >
+                        Mark all as read
+                      </button>
+                    </div>
                   </div>
                   <div className="flex gap-1.5 px-3 py-2 border-b border-[#F3F0ED] overflow-x-auto" role="tablist" aria-label="Notification categories">
                     {(["all", ...CATEGORIES] as const).map((c) => {
-                      const count = c === "all" ? notifications.length : notifications.filter((n) => n.category === c).length;
+                      const count = (c === "all" ? notifications : notifications.filter((n) => n.category === c)).filter((n) => !isRead(n)).length;
                       const active = notifTab === c;
                       return (
                         <button
@@ -498,12 +555,13 @@ export default function Layout() {
                     ) : (
                       visibleNotifs.map((n) => {
                         const Icon = n.icon;
+                        const read = isRead(n);
                         return (
                           <Link
                             key={n.id}
                             to={n.to}
-                            onClick={() => setNotifOpen(false)}
-                            className="flex items-start gap-3 px-4 py-3 hover:bg-[#F9F8F7] border-b border-[#F3F0ED] last:border-b-0 transition-colors"
+                            onClick={() => { markRead([n]); setNotifOpen(false); }}
+                            className={`flex items-start gap-3 px-4 py-3 hover:bg-[#F9F8F7] border-b border-[#F3F0ED] last:border-b-0 transition-colors ${read ? "opacity-60" : "bg-[#FFFBFB]"}`}
                           >
                             <div className={`p-1.5 rounded-lg flex-shrink-0 ${n.iconClass}`}>
                               <Icon className="w-3.5 h-3.5" />
@@ -512,8 +570,9 @@ export default function Layout() {
                               <span className={`inline-block text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border mb-1 ${CATEGORY_META[n.category].chip}`}>
                                 {CATEGORY_META[n.category].label}
                               </span>
-                              <div className="text-xs text-[#1C1C2E] leading-relaxed">{n.text}</div>
+                              <div className={`text-xs text-[#1C1C2E] leading-relaxed ${read ? "" : "font-medium"}`}>{n.text}</div>
                             </div>
+                            {!read && <span className="ml-auto mt-1 w-2 h-2 rounded-full bg-[#7C2D3E] flex-shrink-0" aria-label="Unread" />}
                           </Link>
                         );
                       })

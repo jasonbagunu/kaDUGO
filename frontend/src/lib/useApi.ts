@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "./api";
+import { onTopic, topicOfPath } from "./realtime";
 
 // Loads data from the backend for a screen. Pass null to skip loading.
 // Only the newest request is allowed to update the screen, so a slow older
@@ -10,10 +11,10 @@ export function useApi<T>(path: string | null) {
   const [error, setError] = useState("");
   const latest = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (path === null) return;
     const id = ++latest.current;
-    setLoading(true);
+    if (!silent) setLoading(true); // a live refresh keeps the current data on screen
     try {
       const result = await api<T>(path);
       if (id !== latest.current) return;
@@ -37,7 +38,20 @@ export function useApi<T>(path: string | null) {
     void load();
   }, [path, load]);
 
-  return { data, loading, error, reload: load };
+  // Live updates: when the server announces a change to this kind of data
+  // (donors, inventory, ...), load it again quietly. Bursts are combined.
+  useEffect(() => {
+    if (path === null) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = onTopic(topicOfPath(path), () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void load(true), 300);
+    });
+    return () => { off(); clearTimeout(timer); };
+  }, [path, load]);
+
+  const reload = useCallback(() => load(), [load]);
+  return { data, loading, error, reload };
 }
 
 // Waits until the value has stopped changing, so typing in a search box does

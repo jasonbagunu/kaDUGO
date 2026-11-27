@@ -1,9 +1,10 @@
 import { Link } from "react-router";
-import { Users, Droplets, Package, AlertTriangle, XCircle, Clock, Calendar, ChevronRight, TrendingUp } from "lucide-react";
+import { Users, Droplets, Package, AlertTriangle, XCircle, Clock, Calendar, ChevronRight, TrendingUp, BookOpen } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, PieChart, Pie, Cell, Legend } from "recharts";
 import { Badge, KPICard } from "../components/ui";
 import { getSession } from "../lib/session";
 import { useApi } from "../lib/useApi";
+import { formatStock, isNoStock } from "../lib/stock";
 import type { ApiDashboard, ApiUnit, Paged } from "../lib/api";
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] as const;
@@ -36,11 +37,16 @@ export default function Dashboard() {
   const firstName = (session?.name ?? "").replace(/^(Dr\.|Mr\.|Ms\.|Mrs\.)\s*/i, "").split(" ")[0];
 
   const header = (
+    <div className="flex flex-wrap items-start justify-between gap-3">
     <div>
       <h1 className="text-2xl font-bold text-[#1C1C2E]" style={{ fontFamily: "Outfit, sans-serif" }}>{greeting()}{firstName ? `, ${firstName}` : ""}</h1>
       <p className="text-sm text-[#6B7280] mt-0.5">
         {isSuper ? "Here's an overview of system accounts and scheduled events." : "Here's an overview of the Regional Blood Center's blood records and inventory."}
       </p>
+    </div>
+    <Link to="/manual" className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-[#E8E5E2] bg-white text-[#7C2D3E] hover:bg-[#FDF2F4] transition-colors">
+      <BookOpen className="w-4 h-4" /> User Manual
+    </Link>
     </div>
   );
 
@@ -99,7 +105,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard title="Total Donors" value={k.totalDonors.toLocaleString()} icon={<Users className="w-5 h-5 text-[#7C2D3E]" />} iconBg="bg-[#FDF2F4]" sub="Registered donors" />
         <KPICard title="Donations This Month" value={k.donationsThisMonth} icon={<Droplets className="w-5 h-5 text-[#7C2D3E]" />} iconBg="bg-[#FDF2F4]" sub={change === null ? "No earlier data to compare" : `${change >= 0 ? "+" : ""}${change}% vs same days last month`} subColor={change !== null && change < 0 ? "text-red-700" : "text-green-700"} />
-        <KPICard title="Usable Blood Units" value={totalUsable} icon={<Package className="w-5 h-5 text-[#7C2D3E]" />} iconBg="bg-[#FDF2F4]" sub="Across all blood types" />
+        <KPICard title="Usable Blood Units" value={formatStock(totalUsable)} icon={<Package className="w-5 h-5 text-[#7C2D3E]" />} iconBg="bg-[#FDF2F4]" sub="Across all blood types" />
         <KPICard title="Units Near Expiration" value={totalExpiringSoon} icon={<Clock className="w-5 h-5 text-amber-700" />} iconBg="bg-amber-50" sub="Within 7 days" subColor="text-amber-700" />
       </div>
 
@@ -125,8 +131,8 @@ export default function Dashboard() {
             return (
               <div key={bt} className="bg-white rounded-xl border border-[#E8E5E2] shadow-sm p-4 text-center">
                 <div className={`text-lg font-bold ${isLow ? "text-[#7C2D3E]" : "text-[#1C1C2E]"}`} style={{ fontFamily: "Outfit, sans-serif" }}>{bt}</div>
-                <div className="text-2xl font-bold text-[#1C1C2E] mt-1" style={{ fontFamily: "Outfit, sans-serif" }}>{data.usable}</div>
-                <div className="text-[10px] text-[#6B7280] mb-2">units</div>
+                <div className={`font-bold mt-1 ${isNoStock(data.usable) ? "text-sm leading-8 text-[#7C2D3E]" : "text-2xl text-[#1C1C2E]"}`} style={{ fontFamily: "Outfit, sans-serif" }}>{formatStock(data.usable)}</div>
+                <div className="text-[10px] text-[#6B7280] mb-2">{isNoStock(data.usable) ? "available" : "units"}</div>
                 <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div className={`h-full rounded-full ${isLow ? "bg-[#7C2D3E]" : "bg-green-600"}`} style={{ width: `${pct}%` }} />
                 </div>
